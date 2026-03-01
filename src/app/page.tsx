@@ -1,7 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Suspense, useState, useRef } from "react";
+import { Suspense, useState, useRef, useEffect } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import NetworkHealthSparkline from "@/components/NetworkHealthSparkline";
 
 // Dynamically import the collaborative editor to enable Code Splitting
@@ -24,10 +25,30 @@ const CollaborativeEditor = dynamic(
 );
 
 export default function Home() {
-  const [currentCode, setCurrentCode] = useState("");
   const [outputLogs, setOutputLogs] = useState<string[]>([]);
+  const sharedOutputRef = useRef<string[]>([]); // Keeps a ref to the latest shared logs for appending
+  const pushLogRef = useRef<((logs: string[]) => void) | null>(null);
+  const pushLanguageRef = useRef<((lang: string) => void) | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState("javascript");
+
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Room ID state
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [isCopied, setIsCopied] = useState(false);
+
+  useEffect(() => {
+    const roomParam = searchParams.get("room");
+    if (!roomParam) {
+      // Generate a simple unique ID
+      const newRoomId = Math.random().toString(36).substring(2, 10);
+      router.replace(`/?room=${newRoomId}`);
+    } else {
+      setRoomId(roomParam);
+    }
+  }, [searchParams, router]);
 
   // Time Travel State
   const [updates, setUpdates] = useState<{ timestamp: number; update: Uint8Array }[]>([]);
@@ -57,16 +78,46 @@ export default function Home() {
     // 2. Create new YDoc
     // 3. Apply updates 0 to `index`
     // 4. Bind editor as readonly
-    setOutputLogs(prev => [`[Time Travel]: Previewing state at update #${index + 1} / ${updates.length}`, ...prev]);
+    // 4. Bind editor as readonly
+    const newLogs = [`[Time Travel]: Previewing state at update #${index + 1} / ${updates.length}`, ...sharedOutputRef.current];
+    pushToSharedLogs(newLogs);
+  };
+
+  const handleOutputChange = (logs: string[]) => {
+    sharedOutputRef.current = logs;
+    setOutputLogs(logs);
+  };
+
+  const handleLanguageChange = (lang: string) => {
+    setSelectedLanguage(lang);
+  };
+
+  const pushToSharedLogs = (newLogs: string[]) => {
+    // We update local state to reflect immediately.
+    setOutputLogs(newLogs);
+
+    // Broadcast via Yjs WebRTC Data Channels to everyone else
+    if (pushLogRef.current) {
+      pushLogRef.current(newLogs);
+    }
   };
 
   const handleRunCode = () => {
-    if (!currentCode.trim()) return;
+    // We cannot rely on React state `currentCode` because it breaks Yjs cursor sync.
+    // Instead we grab the actual code from the YDoc text type directly so it is always 
+    // correct without causing re-renders.
+    const ytext = ydocRef.current?.getText("monaco");
+    const codeToRun = ytext ? ytext.toString() : "";
+
+    if (!codeToRun.trim()) {
+      pushToSharedLogs(["Please enter some code to run."]);
+      return;
+    }
 
     setIsExecuting(true);
 
     if (selectedLanguage === "javascript") {
-      setOutputLogs(["Initializing local JS sandbox environment...", "Running code..."]);
+      pushToSharedLogs(["Initializing local JS sandbox environment...", "Running code..."]);
 
       // Spawn a local worker
       const worker = new Worker(new URL("@/workers/jsWorker.ts", import.meta.url));
@@ -82,22 +133,24 @@ export default function Home() {
           finalLogs.push(`\n[Error]: ${error}`);
         }
 
-        setOutputLogs(prev => [...prev.slice(0, -1), ...finalLogs]);
+        // We update the shared logs, replacing the "Running code..." message
+        pushToSharedLogs(finalLogs);
+
         setIsExecuting(false);
         worker.terminate();
       };
 
       worker.onerror = (err) => {
-        setOutputLogs(prev => [...prev, `\n[Fatal Worker Error]: ${err.message}`]);
+        pushToSharedLogs([...sharedOutputRef.current, `\n[Fatal Worker Error]: ${err.message}`]);
         setIsExecuting(false);
         worker.terminate();
       };
 
-      worker.postMessage({ code: currentCode });
+      worker.postMessage({ code: codeToRun });
 
       setTimeout(() => {
         if (isExecuting) {
-          setOutputLogs(prev => [...prev, "\n[Execution Timeout: Script ran for more than 5 seconds and was killed.]"]);
+          pushToSharedLogs([...sharedOutputRef.current, "\n[Execution Timeout: Script ran for more than 5 seconds and was killed.]"]);
           setIsExecuting(false);
           worker.terminate();
         }
@@ -105,14 +158,15 @@ export default function Home() {
 
     } else {
       // Remote Execution via our Backend
-      setOutputLogs([`Connecting to execution cluster for ${selectedLanguage}...`, "Sending payload..."]);
+      pushToSharedLogs([`Connecting to execution cluster for ${selectedLanguage}...`, "Sending payload..."]);
 
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || `http://${host}:3002`;
 
       fetch(`${backendUrl}/api/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: selectedLanguage, code: currentCode })
+        body: JSON.stringify({ language: selectedLanguage, code: codeToRun })
       })
         .then(res => res.json())
         .then(data => {
@@ -125,16 +179,36 @@ export default function Home() {
           } else {
             finalLogs.push(`\n[Error]: ${data.error}`);
           }
-          setOutputLogs(prev => [...prev.slice(0, -1), ...finalLogs]);
+
+          pushToSharedLogs(finalLogs);
         })
         .catch(err => {
-          setOutputLogs(prev => [...prev, `\n[Fatal Network Error]: ${err.message}`]);
+          pushToSharedLogs([...sharedOutputRef.current, `\n[Fatal Network Error]: ${err.message}`]);
         })
         .finally(() => {
           setIsExecuting(false);
         });
     }
   };
+
+  const handleShare = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy URL:", err);
+    }
+  };
+
+  if (!roomId) {
+    // Prevent rendering the editor until we have a room ID to avoid split-brain
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-[#0d1117] to-[#161b22] flex items-center justify-center">
+        <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-[#0d1117] to-[#161b22] text-white p-4 md:p-8 flex flex-col font-sans selection:bg-blue-500/30">
@@ -152,8 +226,22 @@ export default function Home() {
           <div className="flex items-center gap-2 px-3 py-1 bg-gray-800/50 rounded-lg border border-gray-700/50 backdrop-blur-sm">
             <NetworkHealthSparkline />
           </div>
-          <button className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-sm font-semibold rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.3)] transition-all duration-200">
-            Share Session
+          <button
+            onClick={handleShare}
+            className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.3)] transition-all duration-200 flex items-center gap-2
+              ${isCopied ? "bg-green-600 hover:bg-green-500" : "bg-blue-600 hover:bg-blue-500"}`}
+          >
+            {isCopied ? (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+                Copied Link!
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"></path></svg>
+                Share Session
+              </>
+            )}
           </button>
         </div>
       </header>
@@ -172,7 +260,12 @@ export default function Home() {
                 {/* Language Selector */}
                 <select
                   value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedLanguage(e.target.value);
+                    if (pushLanguageRef.current) {
+                      pushLanguageRef.current(e.target.value);
+                    }
+                  }}
                   className="bg-[#1e1e1e] border border-gray-700 text-gray-300 text-xs rounded px-2 py-1 outline-none appearance-none cursor-pointer hover:border-gray-500 transition-colors"
                 >
                   <option value="javascript">JavaScript (Local)</option>
@@ -189,11 +282,14 @@ export default function Home() {
             </div>
 
             <div className="flex-1 w-full relative overflow-hidden">
-              <Suspense fallback={null}>
+              <Suspense fallback={<div className="p-4 text-gray-400">Loading editor environment...</div>}>
                 <CollaborativeEditor
-                  roomName="demo-collab-room-v1"
+                  roomName={roomId}
                   language={selectedLanguage}
-                  onCodeChange={(code) => setCurrentCode(code)}
+                  onLanguageChange={handleLanguageChange}
+                  onOutputChange={handleOutputChange}
+                  onPushLogRef={(fn) => (pushLogRef.current = fn)}
+                  onPushLanguageRef={(fn) => (pushLanguageRef.current = fn)}
                   onYDocReady={handleYDocReady}
                 />
               </Suspense>

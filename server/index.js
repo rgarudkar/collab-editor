@@ -31,15 +31,18 @@ app.post("/api/execute", (req, res) => {
 
     if (language === "javascript") {
         filePath = path.join(tempDir, `${fileName}.js`);
-        command = `node ${filePath}`;
+        command = `node "${filePath}"`;
     } else if (language === "python" || language === "python3") {
         filePath = path.join(tempDir, `${fileName}.py`);
-        // Windows typical python command
-        command = `python ${filePath}`;
+
+        // Windows typical python absolute path from winget or Microsoft Store
+        const pythonPath = "C:\\Users\\ramgo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe";
+        command = `"${pythonPath}" "${filePath}"`;
+
     } else if (language === "cpp") {
         filePath = path.join(tempDir, `${fileName}.cpp`);
         const outPath = path.join(tempDir, `${fileName}.exe`);
-        command = `g++ ${filePath} -o ${outPath} && ${outPath}`;
+        command = `g++ "${filePath}" -o "${outPath}" && "${outPath}"`;
     } else {
         return res.status(400).json({ error: `Unsupported language: ${language}`, success: false });
     }
