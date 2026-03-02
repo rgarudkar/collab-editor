@@ -1,365 +1,368 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { Suspense, useState, useRef, useEffect } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import NetworkHealthSparkline from "@/components/NetworkHealthSparkline";
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
+import { motion, useAnimation } from "framer-motion";
+import { Terminal, Users, Zap, ArrowRight, Play, Code2 } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
-// Dynamically import the collaborative editor to enable Code Splitting
-// This keeps the initial load time fast since Monaco is heavy.
-const CollaborativeEditor = dynamic(
-  () => import("@/components/CollaborativeEditor"),
-  {
-    ssr: false, // Monaco doesn't run on the server
-    loading: () => (
-      <div className="w-full h-full min-h-[500px] flex items-center justify-center bg-[#1e1e1e] rounded-xl border border-gray-700/50 shadow-2xl">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-gray-400 font-medium tracking-wide">
-            Loading Editor Engine...
-          </p>
+// Floating Code Background Component for Light & Dark Theme
+const FloatingCode = ({ delay, duration, code, xOffset, opacity, scale }: { delay: number, duration: number, code: string, xOffset: string, opacity: number, scale: number }) => (
+    <motion.div
+        className="absolute whitespace-pre font-mono text-[10px] md:text-xs pointer-events-none z-0 select-none p-3 md:p-4 rounded-xl border bg-white/40 border-slate-200/30 shadow-xl backdrop-blur-md dark:bg-[#0a0f25]/40 dark:border-indigo-500/20 dark:shadow-[0_0_40px_rgba(99,102,241,0.1)] text-slate-500/70 font-medium dark:text-indigo-200/50"
+        style={{ left: xOffset, opacity, transform: `scale(${scale})` }}
+        initial={{ y: "110vh", x: 0 }}
+        animate={{
+            y: "-100vh",
+            x: [0, 20, -15, 0]
+        }}
+        transition={{
+            y: { duration, delay, repeat: Infinity, ease: "linear" },
+            x: { duration: 18, delay, repeat: Infinity, ease: "easeInOut" }
+        }}
+    >
+        {/* Terminal Header Dots */}
+        <div className="flex gap-1.5 mb-2 md:mb-3 opacity-40">
+            <div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-red-400"></div>
+            <div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-amber-400"></div>
+            <div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-emerald-400"></div>
         </div>
-      </div>
-    ),
-  }
+        {code}
+    </motion.div>
 );
 
-export default function Home() {
-  const [outputLogs, setOutputLogs] = useState<string[]>([]);
-  const sharedOutputRef = useRef<string[]>([]); // Keeps a ref to the latest shared logs for appending
-  const pushLogRef = useRef<((logs: string[]) => void) | null>(null);
-  const pushLanguageRef = useRef<((lang: string) => void) | null>(null);
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState("javascript");
+// Floating Cursor Component mimicking active peer-to-peer users
+const FloatingCursor = ({ color, name, xOffsets, yOffsets, delay, duration }: { color: string, name: string, xOffsets: string[], yOffsets: string[], delay: number, duration: number }) => (
+    <motion.div
+        className="absolute pointer-events-none z-20 flex items-start gap-1 drop-shadow-2xl"
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{
+            left: xOffsets,
+            top: yOffsets,
+            opacity: [0, 1, 1, 0],
+            scale: [0.8, 1, 1, 0.8],
+            y: [0, -15, 10, -5, 0] // Subtle bobbing
+        }}
+        transition={{ duration, delay, repeat: Infinity, ease: "easeInOut" }}
+    >
+        <svg className="w-6 h-6 md:w-8 md:h-8" style={{ color: color, transform: 'rotate(-25deg)' }} fill="currentColor" stroke="white" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 4l5.5 16 3-6.5L19 10.5 4 4z" /></svg>
+        <span className="text-xs md:text-sm font-bold px-2.5 py-1 rounded shadow-lg whitespace-nowrap mt-5 md:mt-7 -ml-2 border border-white/20" style={{ backgroundColor: color, color: 'white' }}>{name}</span>
+    </motion.div>
+);
 
-  const searchParams = useSearchParams();
-  const router = useRouter();
+// Custom Typewriter Hook for Realistic Coding Effect
+const useTypewriter = (texts: string[], typingSpeed: number = 80, delayBetweenTexts: number = 500) => {
+    const [displayedText1, setDisplayedText1] = useState("");
+    const [displayedText2, setDisplayedText2] = useState("");
+    const [currentTextIndex, setCurrentTextIndex] = useState(0);
 
-  // Room ID state
-  const [roomId, setRoomId] = useState<string | null>(null);
-  const [isCopied, setIsCopied] = useState(false);
-
-  useEffect(() => {
-    const roomParam = searchParams.get("room");
-    if (!roomParam) {
-      // Generate a simple unique ID
-      const newRoomId = Math.random().toString(36).substring(2, 10);
-      router.replace(`/?room=${newRoomId}`);
-    } else {
-      setRoomId(roomParam);
-    }
-  }, [searchParams, router]);
-
-  // Time Travel State
-  const [updates, setUpdates] = useState<{ timestamp: number; update: Uint8Array }[]>([]);
-  const [replayIndex, setReplayIndex] = useState(-1);
-  const ydocRef = useRef<any>(null);
-
-  const handleYDocReady = (ydoc: any) => {
-    ydocRef.current = ydoc;
-
-    // Listen for all updates on the YDoc
-    ydoc.on('update', (update: Uint8Array) => {
-      setUpdates(prev => [...prev, { timestamp: Date.now(), update }]);
-    });
-  };
-
-  const handleTimeTravelChange = (index: number) => {
-    setReplayIndex(index);
-    if (!ydocRef.current) return;
-
-    // To time travel, we essentially need a fresh document to apply updates to, 
-    // or we manage it carefully. For simplicity in a local demo, we can just log the action,
-    // as full time-travel in Yjs usually requires destroying and recreating the YDoc/Binding 
-    // or using a separate readonly YDoc.
-
-    // In a full implementation: 
-    // 1. Unbind editor
-    // 2. Create new YDoc
-    // 3. Apply updates 0 to `index`
-    // 4. Bind editor as readonly
-    // 4. Bind editor as readonly
-    const newLogs = [`[Time Travel]: Previewing state at update #${index + 1} / ${updates.length}`, ...sharedOutputRef.current];
-    pushToSharedLogs(newLogs);
-  };
-
-  const handleOutputChange = (logs: string[]) => {
-    sharedOutputRef.current = logs;
-    setOutputLogs(logs);
-  };
-
-  const handleLanguageChange = (lang: string) => {
-    setSelectedLanguage(lang);
-  };
-
-  const pushToSharedLogs = (newLogs: string[]) => {
-    // We update local state to reflect immediately.
-    setOutputLogs(newLogs);
-
-    // Broadcast via Yjs WebRTC Data Channels to everyone else
-    if (pushLogRef.current) {
-      pushLogRef.current(newLogs);
-    }
-  };
-
-  const handleRunCode = () => {
-    // We cannot rely on React state `currentCode` because it breaks Yjs cursor sync.
-    // Instead we grab the actual code from the YDoc text type directly so it is always 
-    // correct without causing re-renders.
-    const ytext = ydocRef.current?.getText("monaco");
-    const codeToRun = ytext ? ytext.toString() : "";
-
-    if (!codeToRun.trim()) {
-      pushToSharedLogs(["Please enter some code to run."]);
-      return;
-    }
-
-    setIsExecuting(true);
-
-    if (selectedLanguage === "javascript") {
-      pushToSharedLogs(["Initializing local JS sandbox environment...", "Running code..."]);
-
-      // Spawn a local worker
-      const worker = new Worker(new URL("@/workers/jsWorker.ts", import.meta.url));
-
-      worker.onmessage = (e) => {
-        const { type, logs, result, error } = e.data;
-
-        let finalLogs = [...logs];
-        if (type === "success") {
-          if (result !== null) finalLogs.push(`=> ${result}`);
-          finalLogs.push(`\n[Execution completed successfully]`);
-        } else {
-          finalLogs.push(`\n[Error]: ${error}`);
+    useEffect(() => {
+        if (currentTextIndex === 0) {
+            if (displayedText1.length < texts[0].length) {
+                const timeout = setTimeout(() => {
+                    setDisplayedText1(texts[0].slice(0, displayedText1.length + 1));
+                }, typingSpeed);
+                return () => clearTimeout(timeout);
+            } else {
+                const timeout = setTimeout(() => {
+                    setCurrentTextIndex(1);
+                }, delayBetweenTexts);
+                return () => clearTimeout(timeout);
+            }
+        } else if (currentTextIndex === 1) {
+            if (displayedText2.length < texts[1].length) {
+                const timeout = setTimeout(() => {
+                    setDisplayedText2(texts[1].slice(0, displayedText2.length + 1));
+                }, typingSpeed);
+                return () => clearTimeout(timeout);
+            }
         }
+    }, [displayedText1, displayedText2, currentTextIndex, texts, typingSpeed, delayBetweenTexts]);
 
-        // We update the shared logs, replacing the "Running code..." message
-        pushToSharedLogs(finalLogs);
+    return { displayedText1, displayedText2, isFinished: currentTextIndex === 1 && displayedText2.length === texts[1].length };
+};
 
-        setIsExecuting(false);
-        worker.terminate();
-      };
+export default function LandingPage() {
+    const router = useRouter();
+    const [roomIdInput, setRoomIdInput] = useState("");
 
-      worker.onerror = (err) => {
-        pushToSharedLogs([...sharedOutputRef.current, `\n[Fatal Worker Error]: ${err.message}`]);
-        setIsExecuting(false);
-        worker.terminate();
-      };
+    const handleCreateRoom = () => {
+        const newRoomId = Math.random().toString(36).substring(2, 10);
+        router.push(`/room/${newRoomId}`);
+    };
 
-      worker.postMessage({ code: codeToRun });
-
-      setTimeout(() => {
-        if (isExecuting) {
-          pushToSharedLogs([...sharedOutputRef.current, "\n[Execution Timeout: Script ran for more than 5 seconds and was killed.]"]);
-          setIsExecuting(false);
-          worker.terminate();
+    const handleJoinRoom = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (roomIdInput.trim()) {
+            router.push(`/room/${roomIdInput.trim()}`);
         }
-      }, 5000);
+    };
 
-    } else {
-      // Remote Execution via our Backend
-      pushToSharedLogs([`Connecting to execution cluster for ${selectedLanguage}...`, "Sending payload..."]);
+    // Framer motion variants for stagger effects
+    const containerVariants = {
+        hidden: { opacity: 0 },
+        show: {
+            opacity: 1,
+            transition: { staggerChildren: 0.12, delayChildren: 0.1 }
+        }
+    };
 
-      const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || `http://${host}:3002`;
+    const itemVariants = {
+        hidden: { opacity: 0, y: 20 },
+        show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 350, damping: 28 } }
+    };
 
-      fetch(`${backendUrl}/api/execute`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: selectedLanguage, code: codeToRun })
-      })
-        .then(res => res.json())
-        .then(data => {
-          let finalLogs: string[] = [];
-          if (data.logs && data.logs.length > 0 && data.logs[0]) {
-            finalLogs.push(data.logs[0]);
-          }
-          if (data.success) {
-            finalLogs.push(`\n[Execution completed successfully]`);
-          } else {
-            finalLogs.push(`\n[Error]: ${data.error}`);
-          }
+    // Array of realistic code snippets for the background
+    const bgSnippets = [
+        `function execute(ast) {\n  return VM.run(ast);\n}`,
+        `const wss = new WebSocketServer();\nwss.on('connection', ws => {\n  ws.send(syncStep1);\n});`,
+        `import * as Y from 'yjs';\nconst doc = new Y.Doc();\nconst text = doc.getText('monaco');`,
+        `template <typename T>\nclass CollabEngine {\n  std::vector<T> peers;\n};`,
+        `@dataclass\nclass EditorState:\n  cursor_pos: int\n  active_line: int`,
+        `// Applying delta\nif (delta.insert) {\n  editor.apply(delta);\n}`,
+        `SELECT * FROM active_rooms \nWHERE users < 4 \nLIMIT 10;`,
+    ];
 
-          pushToSharedLogs(finalLogs);
-        })
-        .catch(err => {
-          pushToSharedLogs([...sharedOutputRef.current, `\n[Fatal Network Error]: ${err.message}`]);
-        })
-        .finally(() => {
-          setIsExecuting(false);
-        });
-    }
-  };
+    const { displayedText1, displayedText2, isFinished } = useTypewriter(["Code Together.", "Execute Anywhere."], 70, 400);
 
-  const handleShare = async () => {
-    try {
-      await navigator.clipboard.writeText(window.location.href);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy URL:", err);
-    }
-  };
-
-  if (!roomId) {
-    // Prevent rendering the editor until we have a room ID to avoid split-brain
     return (
-      <main className="min-h-screen bg-gradient-to-br from-[#0d1117] to-[#161b22] flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-      </main>
-    );
-  }
+        <div className="h-screen w-full flex flex-col font-sans relative overflow-hidden bg-slate-50 dark:bg-[#02040a] selection:bg-blue-200 dark:selection:bg-indigo-500/30 transition-colors duration-300">
 
-  return (
-    <main className="min-h-screen bg-gradient-to-br from-[#0d1117] to-[#161b22] text-white p-4 md:p-8 flex flex-col font-sans selection:bg-blue-500/30">
-      {/* Header */}
-      <header className="flex items-center justify-between mb-6 pb-4 border-b border-gray-800">
-        <div>
-          <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500 tracking-tight">
-            SyncWrite Pro
-          </h1>
-          <p className="text-sm text-gray-400 mt-1">
-            Real-time collaborative code environment
-          </p>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 px-3 py-1 bg-gray-800/50 rounded-lg border border-gray-700/50 backdrop-blur-sm">
-            <NetworkHealthSparkline />
-          </div>
-          <button
-            onClick={handleShare}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.3)] transition-all duration-200 flex items-center gap-2
-              ${isCopied ? "bg-green-600 hover:bg-green-500" : "bg-blue-600 hover:bg-blue-500"}`}
-          >
-            {isCopied ? (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-                Copied Link!
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"></path></svg>
-                Share Session
-              </>
-            )}
-          </button>
-        </div>
-      </header>
+            {/* Absolute Premium Background - Light & Dark Theme */}
+            <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
+                {/* Soft gradient background - Improved Light Mode */}
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-50/80 via-white to-purple-50/80 dark:hidden z-[-2]"></div>
 
-      {/* Main Layout Area */}
-      <div className="flex-1 flex flex-col lg:flex-row gap-6 h-full min-h-0">
-        {/* Editor Section */}
-        <section className="flex-1 rounded-xl glass-panel relative flex flex-col min-h-[500px]">
-          <div className="absolute -inset-[1px] bg-gradient-to-b from-blue-500/20 to-purple-500/20 rounded-xl z-0 blur-sm"></div>
-          <div className="relative z-10 w-full h-full p-1 bg-[#1e1e1e]/90 rounded-xl backdrop-blur-md">
-            {/* Header bar for editor */}
-            <div className="flex items-center justify-between px-4 py-2 bg-[#252526] rounded-t-lg border-b border-gray-800">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-mono text-gray-400">index.{selectedLanguage === 'python' ? 'py' : selectedLanguage === 'cpp' ? 'cpp' : 'js'}</span>
+                {/* Subtle Dot Grid */}
+                <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] dark:bg-[radial-gradient(#ffffff15_1px,transparent_1px)] bg-[size:32px_32px] [mask-image:radial-gradient(ellipse_70%_70%_at_50%_50%,#000_20%,transparent_100%)] z-[-1]"></div>
 
-                {/* Language Selector */}
-                <select
-                  value={selectedLanguage}
-                  onChange={(e) => {
-                    setSelectedLanguage(e.target.value);
-                    if (pushLanguageRef.current) {
-                      pushLanguageRef.current(e.target.value);
-                    }
-                  }}
-                  className="bg-[#1e1e1e] border border-gray-700 text-gray-300 text-xs rounded px-2 py-1 outline-none appearance-none cursor-pointer hover:border-gray-500 transition-colors"
-                >
-                  <option value="javascript">JavaScript (Local)</option>
-                  <option value="python">Python (Remote)</option>
-                  <option value="cpp">C++ (Remote)</option>
-                </select>
-              </div>
-
-              <div className="flex gap-2">
-                {/* Placeholder for active users icons */}
-                <div className="w-6 h-6 rounded-full bg-orange-500 border-2 border-[#252526] -ml-2 first:ml-0 z-20"></div>
-                <div className="w-6 h-6 rounded-full bg-purple-500 border-2 border-[#252526] -ml-2 z-10"></div>
-              </div>
-            </div>
-
-            <div className="flex-1 w-full relative overflow-hidden">
-              <Suspense fallback={<div className="p-4 text-gray-400">Loading editor environment...</div>}>
-                <CollaborativeEditor
-                  roomName={roomId}
-                  language={selectedLanguage}
-                  onLanguageChange={handleLanguageChange}
-                  onOutputChange={handleOutputChange}
-                  onPushLogRef={(fn) => (pushLogRef.current = fn)}
-                  onPushLanguageRef={(fn) => (pushLanguageRef.current = fn)}
-                  onYDocReady={handleYDocReady}
+                {/* Ambient Soft Orbs */}
+                <motion.div
+                    animate={{ y: [0, -30, 0], x: [0, 20, 0] }}
+                    transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
+                    className="absolute top-[-5%] left-[15%] w-[600px] h-[600px] bg-blue-300/30 dark:bg-indigo-600/20 rounded-full blur-[100px] dark:blur-[120px]"
                 />
-              </Suspense>
-            </div>
-          </div>
-        </section>
+                <motion.div
+                    animate={{ y: [0, 40, 0], x: [0, -30, 0] }}
+                    transition={{ duration: 15, repeat: Infinity, ease: "easeInOut", delay: 2 }}
+                    className="absolute bottom-[-10%] right-[5%] w-[700px] h-[700px] bg-purple-300/30 dark:bg-fuchsia-600/10 rounded-full blur-[120px] dark:blur-[150px]"
+                />
 
-        {/* Sidebar / Tools Section */}
-        <aside className="w-full lg:w-80 flex flex-col gap-6 shrink-0">
-          {/* Output / Execution Area */}
-          <div className="bg-[#161b22]/80 border border-gray-800 rounded-xl p-4 flex-1 backdrop-blur-md shadow-xl flex flex-col">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-gray-300">Execution Output</h2>
-              <button
-                onClick={handleRunCode}
-                disabled={isExecuting}
-                className="text-xs px-3 py-1.5 bg-green-600/20 hover:bg-green-600/40 border border-green-500/50 rounded transition-colors text-green-400 font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-              >
-                {isExecuting ? (
-                  <>
-                    <span className="w-3 h-3 border-2 border-green-400 border-t-transparent rounded-full animate-spin"></span>
-                    Running...
-                  </>
-                ) : (
-                  `► Run ${selectedLanguage === 'javascript' ? 'Local' : 'Remote'}`
-                )}
-              </button>
-            </div>
-            <div className="flex-1 bg-black/40 rounded-lg border border-gray-800/50 p-3 font-mono text-xs text-gray-400 overflow-y-auto whitespace-pre-wrap">
-              {outputLogs.length === 0 ? (
-                <span className="opacity-50">{"> Ready for execution..."}</span>
-              ) : (
-                outputLogs.map((log, i) => (
-                  <div key={i} className={`mb-1 ${log.includes('[Error]') || log.includes('Timeout') ? 'text-red-400' : log.includes('successfully') ? 'text-green-400/80' : ''}`}>
-                    {log}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+                {/* Animated Code Blocks - Positioned strictly left and right to prevent hero overlap */}
+                <div className="absolute inset-0 z-0 [mask-image:linear-gradient(to_bottom,transparent_0%,#000_10%,#000_90%,transparent_100%)] dark:[mask-image:radial-gradient(ellipse_80%_80%_at_50%_50%,#000_40%,transparent_100%)]">
+                    {/* LEFT SIDE SNIPPETS */}
+                    <FloatingCode code={bgSnippets[0]} xOffset="4%" duration={35} delay={0} opacity={0.6} scale={0.9} />
+                    <FloatingCode code={bgSnippets[2]} xOffset="12%" duration={45} delay={5} opacity={0.5} scale={0.8} />
+                    <FloatingCode code={bgSnippets[5]} xOffset="8%" duration={40} delay={15} opacity={0.4} scale={0.85} />
 
-          {/* Time Travel / Debugging Panel */}
-          <div className="h-44 bg-[#161b22]/80 border border-gray-800 rounded-xl p-4 backdrop-blur-md shadow-xl flex flex-col">
-            <h2 className="text-sm font-semibold text-gray-300 mb-1 flex items-center justify-between">
-              <span>Time-Travel Debugging</span>
-              <span className="text-xs bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded border border-purple-500/30">
-                {updates.length} states saved
-              </span>
-            </h2>
-            <p className="text-xs text-gray-500 mb-4 leading-relaxed">
-              Drag the slider to preview the interview history state. In production, these are stored in MongoDB.
-            </p>
-            <div className="mt-auto">
-              <input
-                type="range"
-                min="0"
-                max={updates.length > 0 ? updates.length - 1 : 0}
-                value={replayIndex === -1 ? (updates.length > 0 ? updates.length - 1 : 0) : replayIndex}
-                onChange={(e) => handleTimeTravelChange(parseInt(e.target.value))}
-                disabled={updates.length <= 1}
-                className="w-full accent-purple-500 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer mb-2"
-              />
-              <div className="flex justify-between text-[10px] text-gray-500">
-                <span>Start</span>
-                <span>Current</span>
-              </div>
+                    {/* RIGHT SIDE SNIPPETS */}
+                    <FloatingCode code={bgSnippets[1]} xOffset="78%" duration={38} delay={2} opacity={0.5} scale={1.05} />
+                    <FloatingCode code={bgSnippets[3]} xOffset="86%" duration={42} delay={8} opacity={0.5} scale={0.9} />
+                    <FloatingCode code={bgSnippets[4]} xOffset="82%" duration={50} delay={1} opacity={0.7} scale={1.1} />
+                    <FloatingCode code={bgSnippets[6]} xOffset="75%" duration={32} delay={12} opacity={0.6} scale={0.95} />
+                </div>
+
+                {/* Floating Collaborative Cursors */}
+                <div className="absolute inset-0 z-10 overflow-hidden [mask-image:linear-gradient(to_bottom,transparent_0%,#000_20%,#000_80%,transparent_100%)]">
+                    <FloatingCursor color="#f59e0b" name="Sarah (Designing)" xOffsets={["15%", "25%", "20%", "15%"]} yOffsets={["40%", "50%", "30%", "40%"]} duration={12} delay={0} />
+                    <FloatingCursor color="#3b82f6" name="Alex (Coding)" xOffsets={["70%", "60%", "80%", "70%"]} yOffsets={["60%", "30%", "45%", "60%"]} duration={15} delay={2} />
+                    <FloatingCursor color="#10b981" name="Chris (Reviewing)" xOffsets={["40%", "55%", "45%", "40%"]} yOffsets={["75%", "65%", "85%", "75%"]} duration={10} delay={5} />
+                    <FloatingCursor color="#ec4899" name="Guest_901" xOffsets={["85%", "75%", "90%", "85%"]} yOffsets={["20%", "40%", "30%", "20%"]} duration={18} delay={7} />
+                </div>
             </div>
-          </div>
-        </aside>
-      </div>
-    </main>
-  );
+
+            {/* Navigation */}
+            <nav className="flex items-center justify-between px-6 py-4 border-b border-slate-200/60 dark:border-white/5 bg-white/70 dark:bg-black/20 backdrop-blur-xl sticky top-0 z-50 shadow-sm dark:shadow-none transition-colors duration-300">
+                <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 dark:to-purple-600 flex items-center justify-center font-bold text-lg text-white shadow-md dark:shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+                        S
+                    </div>
+                    <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-800 to-slate-600 dark:from-blue-400 dark:to-purple-500 tracking-tight transition-colors">
+                        SyncWrite Pro
+                    </span>
+                </div>
+                <div className="flex items-center gap-4">
+                    <ThemeToggle />
+
+                    <SignedOut>
+                        <SignInButton mode="modal">
+                            <button className="px-5 py-2 text-sm font-semibold rounded-lg bg-white dark:bg-white/10 hover:bg-slate-50 dark:hover:bg-white/20 text-slate-700 dark:text-white transition-all border border-slate-200 dark:border-white/10 shadow-sm dark:shadow-lg dark:backdrop-blur-md">
+                                Sign In
+                            </button>
+                        </SignInButton>
+                    </SignedOut>
+                    <SignedIn>
+                        <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "w-9 h-9 border border-slate-200 dark:border-2 dark:border-gray-800" } }} />
+                    </SignedIn>
+                </div>
+            </nav>
+
+            {/* Hero Section */}
+            <main className="flex-1 flex flex-col items-center justify-center px-4 py-4 text-center relative z-10 w-full max-w-6xl mx-auto h-full overflow-hidden">
+                <motion.div
+                    variants={containerVariants}
+                    initial="hidden"
+                    animate="show"
+                    className="flex flex-col items-center w-full min-h-[500px]"
+                >
+                    {/* Eyebrow badge */}
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5 }}
+                        className="mb-6 mt-2 px-5 py-2 rounded-full border border-slate-200 dark:border-indigo-500/20 bg-white/50 dark:bg-indigo-500/10 shadow-sm dark:shadow-[0_0_20px_rgba(99,102,241,0.1)] text-slate-700 dark:text-indigo-200 text-sm font-medium flex items-center gap-3 backdrop-blur-md transition-colors backdrop-saturate-150"
+                    >
+                        <span className="relative flex h-2.5 w-2.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
+                        </span>
+                        <span>WebRTC Real-time Engine Active</span>
+                        <span className="w-1 h-1 rounded-full bg-slate-400 dark:bg-slate-600"></span>
+                        <span className="text-emerald-600 dark:text-emerald-400 font-semibold tracking-wide">127 Peers Online</span>
+                    </motion.div>
+
+                    <h1 className="text-5xl md:text-7xl lg:text-8xl font-black tracking-tight mb-4 max-w-5xl text-pretty leading-[1.1] text-slate-900 dark:text-white transition-colors flex flex-col items-center min-h-[120px] md:min-h-[220px]">
+                        <div className="flex items-center justify-center">
+                            <span>{displayedText1}</span>
+                            {displayedText2.length === 0 && !isFinished && (
+                                <span className="inline-block w-[3px] md:w-[6px] h-[36px] md:h-[56px] lg:h-[70px] bg-blue-500 ml-1 md:ml-3 animate-[pulse_0.8s_ease-in-out_infinite]"></span>
+                            )}
+                        </div>
+                        <div className="flex items-center justify-center pt-2 md:pt-4 group">
+                            <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 via-indigo-500 to-purple-600 dark:from-blue-400 dark:via-indigo-400 dark:to-purple-500 dark:drop-shadow-[0_0_25px_rgba(99,102,241,0.5)]">
+                                {displayedText2}
+                            </span>
+                            {displayedText2.length > 0 && !isFinished && (
+                                <span className="inline-block w-[3px] md:w-[6px] h-[36px] md:h-[56px] lg:h-[70px] bg-fuchsia-500 ml-1 md:ml-3 animate-[pulse_0.8s_ease-in-out_infinite]"></span>
+                            )}
+                        </div>
+                    </h1>
+
+                    <motion.p
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={isFinished ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
+                        transition={{ duration: 0.8, ease: "easeOut" }}
+                        className="text-base md:text-lg text-slate-600 dark:text-slate-400 mb-8 max-w-2xl leading-relaxed transition-colors tracking-wide"
+                    >
+                        The ultimate peer-to-peer collaborative editor. Write code with your team, see live cursors, and execute algorithms instantly over WebSockets.
+                    </motion.p>
+
+                    <motion.div
+                        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                        animate={isFinished ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 20, scale: 0.95 }}
+                        transition={{ duration: 0.8, delay: 0.2, ease: "easeOut" }}
+                        className="flex flex-col sm:flex-row items-center gap-4 w-full max-w-xl mx-auto"
+                    >
+                        {/* Create Room Button - Redesigned with glow effects */}
+                        <div className="relative group w-full sm:w-auto">
+                            {/* Animated Glow Backdrop */}
+                            <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-purple-600 rounded-xl blur-md opacity-40 group-hover:opacity-100 transition duration-500 group-hover:duration-200 animate-pulse"></div>
+
+                            <button
+                                onClick={handleCreateRoom}
+                                className="relative w-full sm:w-auto px-8 py-3.5 bg-slate-900 dark:bg-[#060918] hover:bg-slate-800 dark:hover:bg-[#0a0f25] text-white font-bold rounded-xl shadow-[0_0_15px_rgba(0,0,0,0.1)] dark:shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] transition-all flex items-center justify-center gap-3 border border-slate-700 dark:border-indigo-500/40 overflow-hidden"
+                            >
+                                {/* Button Hover Gradient Sweep */}
+                                <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 dark:from-blue-500/0 dark:via-blue-500/10 dark:to-purple-500/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 ease-in-out"></div>
+
+                                <Code2 className="w-5 h-5 text-blue-300 dark:text-blue-400 group-hover:scale-110 group-hover:rotate-3 transition-transform relative z-10" />
+                                <span className="relative z-10 bg-clip-text text-transparent bg-white dark:bg-gradient-to-r dark:from-white dark:to-indigo-200">
+                                    Start Coding Now
+                                </span>
+                            </button>
+                        </div>
+
+                        <span className="text-slate-400 dark:text-slate-500 font-medium font-mono text-sm hidden sm:block px-2 transition-colors">OR</span>
+
+                        {/* Join Room Form - Secondary Ghost Style */}
+                        <form onSubmit={handleJoinRoom} className="w-full sm:w-auto flex-1 relative flex items-center group">
+                            <input
+                                type="text"
+                                placeholder="Paste Room ID..."
+                                value={roomIdInput}
+                                onChange={(e) => setRoomIdInput(e.target.value)}
+                                className="w-full bg-slate-50/50 dark:bg-white/[0.02] border border-slate-300/60 dark:border-white/10 focus:bg-white dark:focus:bg-[#0a0f25]/80 focus:border-blue-500 dark:focus:border-indigo-500/80 focus:shadow-[0_0_15px_rgba(59,130,246,0.15)] dark:focus:shadow-[0_0_20px_rgba(99,102,241,0.2)] rounded-xl px-5 py-3.5 text-sm outline-none transition-all duration-300 pr-12 text-slate-800 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 backdrop-blur-sm"
+                            />
+                            <button
+                                type="submit"
+                                disabled={!roomIdInput.trim()}
+                                className="absolute right-2 p-1.5 bg-transparent hover:bg-slate-200/50 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-white rounded-lg transition-all disabled:opacity-30 disabled:hover:bg-transparent"
+                            >
+                                <ArrowRight className="w-4 h-4" />
+                            </button>
+                        </form>
+                    </motion.div>
+
+                    {/* Social Proof Avatars */}
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={isFinished ? { opacity: 1 } : { opacity: 0 }}
+                        transition={{ duration: 1, delay: 0.6 }}
+                        className="mt-8 flex items-center justify-center gap-3"
+                    >
+                        <div className="flex -space-x-2 overflow-hidden items-center justify-center">
+                            {[
+                                "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix",
+                                "https://api.dicebear.com/7.x/avataaars/svg?seed=Luna",
+                                "https://api.dicebear.com/7.x/avataaars/svg?seed=Alex",
+                                "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah",
+                            ].map((src, i) => (
+                                <img key={i} className="inline-block h-6 w-6 rounded-full ring-2 ring-white dark:ring-[#02040a] bg-slate-100 dark:bg-slate-800" src={src} alt="User Avatar" />
+                            ))}
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Joined by 1,000+ developers</p>
+                    </motion.div>
+                </motion.div>
+
+                {/* Feature Grid */}
+                <motion.div
+                    initial={{ opacity: 0, y: 40 }}
+                    animate={isFinished ? { opacity: 1, y: 0 } : { opacity: 0, y: 40 }}
+                    transition={{ duration: 0.8, delay: 0.4, ease: "easeOut" }}
+                    className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mt-16 mb-4 w-full px-4 relative z-10"
+                >
+                    {[
+                        {
+                            title: "Zero Latency Collab",
+                            desc: "Peer-to-peer data channels mean your keystrokes arrive instantly without server bottlenecks.",
+                            icon: <Zap className="w-5 h-5 text-amber-500 dark:text-amber-400" />,
+                            hoverClass: "hover:border-amber-300 dark:hover:border-amber-500/30 dark:hover:shadow-[0_8px_30px_rgba(245,158,11,0.15)] dark:hover:bg-[#1a150cf0]",
+                            iconBg: "dark:bg-amber-500/10 dark:border-amber-500/20 group-hover:bg-amber-50 dark:group-hover:bg-amber-500/20"
+                        },
+                        {
+                            title: "Live Code Execution",
+                            desc: "Run sandboxed JavaScript locally or dispatch Python/C++ to the execution engine.",
+                            icon: <Terminal className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />,
+                            hoverClass: "hover:border-emerald-300 dark:hover:border-emerald-500/30 dark:hover:shadow-[0_8px_30px_rgba(16,185,129,0.15)] dark:hover:bg-[#0b1a12f0]",
+                            iconBg: "dark:bg-emerald-500/10 dark:border-emerald-500/20 group-hover:bg-emerald-50 dark:group-hover:bg-emerald-500/20"
+                        },
+                        {
+                            title: "Awareness & Presence",
+                            desc: "See exactly who is editing what line using Yjs conflict-free replication capabilities.",
+                            icon: <Users className="w-5 h-5 text-blue-500 dark:text-blue-400" />,
+                            hoverClass: "hover:border-blue-300 dark:hover:border-blue-500/30 dark:hover:shadow-[0_8px_30px_rgba(59,130,246,0.15)] dark:hover:bg-[#0a1024f0]",
+                            iconBg: "dark:bg-blue-500/10 dark:border-blue-500/20 group-hover:bg-blue-50 dark:group-hover:bg-blue-500/20"
+                        },
+                    ].map((feature, i) => (
+                        <motion.div
+                            key={i}
+                            whileHover={{ y: -5, scale: 1.01 }}
+                            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                            className={`p-6 rounded-2xl bg-white/70 dark:bg-[#060918]/60 border border-slate-200 dark:border-white/[0.05] backdrop-blur-xl text-left shadow-sm dark:shadow-[0_8px_30px_rgb(0,0,0,0.4)] relative overflow-hidden group transition-all duration-300 ${feature.hoverClass}`}
+                        >
+                            <div className="absolute top-0 right-0 p-4 opacity-[0.03] dark:opacity-[0.05] group-hover:scale-150 transition-transform duration-700 ease-out group-hover:opacity-[0.08] dark:group-hover:opacity-10 group-hover:rotate-12">
+                                {feature.icon}
+                            </div>
+                            <div className={`w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center mb-4 border border-slate-100 dark:shadow-inner transition-colors ${feature.iconBg}`}>
+                                {feature.icon}
+                            </div>
+                            <h3 className="text-lg font-bold text-slate-800 dark:text-gray-100 mb-2 transition-colors">{feature.title}</h3>
+                            <p className="text-xs md:text-sm text-slate-600 dark:text-slate-400 leading-relaxed font-light transition-colors tracking-wide">{feature.desc}</p>
+                        </motion.div>
+                    ))}
+                </motion.div>
+            </main>
+        </div>
+    );
 }

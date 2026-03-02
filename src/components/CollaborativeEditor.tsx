@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
 import { MonacoBinding } from "y-monaco";
+import { useUser } from "@clerk/nextjs";
 import Editor, { useMonaco } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 
@@ -39,6 +40,9 @@ export default function CollaborativeEditor({
     const cursorColor = useRef(
         `hsl(${Math.floor(Math.random() * 360)}, 100%, 65%)`
     );
+
+    const { user } = useUser();
+    const [isRoomFull, setIsRoomFull] = useState(false);
 
     const handleEditorDidMount = (
         editor: monaco.editor.IStandaloneCodeEditor,
@@ -117,11 +121,14 @@ export default function CollaborativeEditor({
             });
         }
 
-        // Set cursor and awareness info
-        const userName = `User-${Math.floor(Math.random() * 1000)}`;
+        // Set cursor and awareness info using Clerk identity
+        const userName = user?.fullName || user?.firstName || user?.username || `User-${Math.floor(Math.random() * 1000)}`;
+        const userAvatar = user?.imageUrl || "";
+
         provider.awareness.setLocalStateField("user", {
             name: userName,
             color: cursorColor.current,
+            avatar: userAvatar
         });
 
         // HACK: y-monaco doesn't automatically add the user's name to the DOM element
@@ -132,6 +139,15 @@ export default function CollaborativeEditor({
             setTimeout(() => {
                 const states = Array.from(provider.awareness.getStates().entries());
 
+                // Room Limiting Logic (Max 4 Users)
+                if (states.length > 4) {
+                    // Yjs typically assigns the highest ClientID incrementally but we can check 
+                    // if our ID is arbitrarily excluded or just kill the connection.
+                    setIsRoomFull(true);
+                    provider.disconnect();
+                    return;
+                }
+
                 // 1. Maintain dynamic CSS for all connected peers
                 let dynamicCss = '';
 
@@ -140,6 +156,7 @@ export default function CollaborativeEditor({
                     if (state?.user) {
                         const color = state.user.color;
                         const name = state.user.name;
+                        const avatar = state.user.avatar;
                         const hslaColor = color.replace('hsl', 'hsla').replace(')', ', 0.3)');
                         const cssSafeId = `client-${clientId}`;
 
@@ -273,7 +290,16 @@ export default function CollaborativeEditor({
 
     return (
         <div className="relative w-full h-full min-h-[500px] border border-gray-700/50 rounded-xl overflow-hidden shadow-2xl bg-[#1e1e1e] flex flex-col">
-            {!isBindingComplete && (
+            {isRoomFull && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#1e1e1e]/90 backdrop-blur-md">
+                    <div className="flex flex-col items-center max-w-sm text-center bg-gray-900 border border-red-500/50 p-8 rounded-2xl shadow-2xl">
+                        <svg className="w-16 h-16 text-red-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                        <h2 className="text-xl font-bold text-white mb-2">Workspace Full</h2>
+                        <p className="text-gray-400 text-sm">This collaborative session has reached maximum capacity (4 users) to ensure high-performance peer-to-peer syncing.</p>
+                    </div>
+                </div>
+            )}
+            {!isBindingComplete && !isRoomFull && (
                 <div className="absolute inset-0 flex items-center justify-center bg-[#1e1e1e]/80 backdrop-blur-sm z-20 text-white/70">
                     <div className="flex flex-col items-center gap-3">
                         <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
