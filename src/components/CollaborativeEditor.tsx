@@ -16,6 +16,7 @@ interface CollaborativeEditorProps {
     onPushLogRef?: (pushFn: (logs: string[]) => void) => void;
     onPushLanguageRef?: (pushFn: (lang: string) => void) => void;
     onYDocReady?: (ydoc: Y.Doc) => void;
+    onUsersChange?: (users: any[]) => void;
 }
 
 export default function CollaborativeEditor({
@@ -26,6 +27,7 @@ export default function CollaborativeEditor({
     onPushLogRef,
     onPushLanguageRef,
     onYDocReady,
+    onUsersChange,
 }: CollaborativeEditorProps) {
     const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(
         null
@@ -35,11 +37,18 @@ export default function CollaborativeEditor({
     const bindingRef = useRef<MonacoBinding | null>(null);
     const ydocRef = useRef<Y.Doc | null>(null);
 
-    // Generates a random color for the cursor
-    // Generates a visible, vibrant color for the cursor
-    const cursorColor = useRef(
-        `hsl(${Math.floor(Math.random() * 360)}, 100%, 65%)`
-    );
+    const getColorFromName = (name: string) => {
+        const vibrantColors = [
+            '#f59e0b', '#3b82f6', '#10b981', '#ec4899',
+            '#8b5cf6', '#ef4444', '#06b6d4', '#f97316',
+            '#14b8a6', '#f43f5e', '#a855f7', '#6366f1'
+        ];
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) {
+            hash = name.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        return vibrantColors[Math.abs(hash) % vibrantColors.length];
+    };
 
     const { user } = useUser();
     const [isRoomFull, setIsRoomFull] = useState(false);
@@ -121,14 +130,28 @@ export default function CollaborativeEditor({
             });
         }
 
-        // Set cursor and awareness info using Clerk identity
-        const userName = user?.fullName || user?.firstName || user?.username || `User-${Math.floor(Math.random() * 1000)}`;
-        const userAvatar = user?.imageUrl || "";
+        // Set cursor and awareness info using Clerk identity (or Guest fallback)
+        const generateGuestIdentity = () => {
+            const animals = ["Fox", "Panda", "Tiger", "Penguin", "Koala", "Lion", "Wolf", "Leopard"];
+            const randomAnimal = animals[Math.floor(Math.random() * animals.length)];
+            return {
+                name: `Anonymous ${randomAnimal}`,
+                avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${randomAnimal}${Math.random()}`
+            };
+        };
+
+        const isGuest = !user;
+        const guestIdentity = isGuest ? generateGuestIdentity() : null;
+
+        const userName = user?.fullName || user?.firstName || user?.username || guestIdentity?.name || "Guest";
+        const userAvatar = user?.imageUrl || guestIdentity?.avatar || "";
+        const computedColor = getColorFromName(userName);
 
         provider.awareness.setLocalStateField("user", {
             name: userName,
-            color: cursorColor.current,
-            avatar: userAvatar
+            color: computedColor,
+            avatar: userAvatar,
+            isGuest: isGuest
         });
 
         // HACK: y-monaco doesn't automatically add the user's name to the DOM element
@@ -151,56 +174,100 @@ export default function CollaborativeEditor({
                 // 1. Maintain dynamic CSS for all connected peers
                 let dynamicCss = '';
 
-                // 2. Map data attributes onto the DOM
+                // Track active users for the header UI
+                const activeUsers: any[] = [];
+                const seenClientIds = new Set();
+
+                // 2. Map data attributes onto the DOM by injecting CSS targeting y-monaco's generated classes
                 states.forEach(([clientId, state]) => {
                     if (state?.user) {
                         const color = state.user.color;
                         const name = state.user.name;
                         const avatar = state.user.avatar;
-                        const hslaColor = color.replace('hsl', 'hsla').replace(')', ', 0.3)');
-                        const cssSafeId = `client-${clientId}`;
 
-                        // Generate CSS strictly for this specific user's cursor
-                        dynamicCss += `
-                            .yRemoteSelectionHead[data-client-id="${clientId}"] {
-                                border-color: ${color} !important;
-                            }
-                            .yRemoteSelectionHead[data-client-id="${clientId}"]::after {
-                                border-color: ${color} !important;
-                            }
-                            .yRemoteSelectionHead[data-client-id="${clientId}"]::before {
-                                content: '${name}';
-                                background-color: ${color} !important;
-                            }
-                            .yRemoteSelection[data-client-id="${clientId}"] {
-                                background-color: ${hslaColor} !important;
-                            }
-                        `;
+                        // Create a translucent version of the hex color for text selections
+                        let r = 0, g = 0, b = 0;
+                        if (color.length === 7) {
+                            r = parseInt(color.slice(1, 3), 16);
+                            g = parseInt(color.slice(3, 5), 16);
+                            b = parseInt(color.slice(5, 7), 16);
+                        }
+                        const translucentColor = `rgba(${r}, ${g}, ${b}, 0.15)`;
 
-                        // If it is another user, try to find their cursor rendering in the DOM
+                        // Prevent duplicates and add to active users list
+                        if (!seenClientIds.has(clientId)) {
+                            seenClientIds.add(clientId);
+                            activeUsers.push({
+                                clientId,
+                                name,
+                                color,
+                                avatar,
+                                isMe: clientId === ydoc.clientID
+                            });
+                        }
+
+                        // We skip generating dynamic CSS for the local user because y-monaco only manages remote cursors
                         if (clientId !== ydoc.clientID) {
-                            try {
-                                const cursorElements = document.querySelectorAll('.yRemoteSelectionHead');
-                                const selectionElements = document.querySelectorAll('.yRemoteSelection');
+                            // Generate CSS strictly for this specific user's cursor
+                            const svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2" style="transform: rotate(-25deg);"><path d="M4 4l5.5 16 3-6.5L19 10.5 4 4z"></path></svg>`;
+                            const svgDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgString)}`;
 
-                                // Tag the DOM elements. Y-monaco sets inline borders, so we use that to find which is which.
-                                cursorElements.forEach(el => {
-                                    const htmlEl = el as HTMLElement;
-                                    if (htmlEl.style.borderColor === color || htmlEl.style.borderLeftColor === color) {
-                                        htmlEl.setAttribute('data-client-name', name);
-                                        htmlEl.setAttribute('data-client-id', String(clientId));
-                                    }
-                                });
-
-                                selectionElements.forEach(el => {
-                                    const htmlEl = el as HTMLElement;
-                                    if (htmlEl.style.backgroundColor === hslaColor || htmlEl.style.backgroundColor?.includes(hslaColor)) {
-                                        htmlEl.setAttribute('data-client-id', String(clientId));
-                                    }
-                                });
-                            } catch (e) {
-                                console.error("Failed to inject cursor name tag", e);
-                            }
+                            // Y-monaco adds the following classes to decorations: .yRemoteSelection-${clientId} and .yRemoteSelectionHead-${clientId}
+                            // By using these exact selectors with !important, we override y-monaco's default inline <style> injection.
+                            dynamicCss += `
+                                .yRemoteSelection-${clientId} {
+                                    background-color: ${translucentColor} !important;
+                                }
+                                .yRemoteSelectionHead-${clientId} {
+                                    position: absolute !important;
+                                    border: none !important;
+                                    background: transparent !important;
+                                    height: 100% !important;
+                                    width: 2px !important;
+                                    box-sizing: border-box !important;
+                                    margin: 0 !important;
+                                    padding: 0 !important;
+                                }
+                                .yRemoteSelectionHead-${clientId}::after {
+                                    position: absolute !important;
+                                    content: ' ' !important;
+                                    background-image: url('${svgDataUrl}') !important;
+                                    background-size: contain !important;
+                                    background-repeat: no-repeat !important;
+                                    background-position: center !important;
+                                    border: none !important;      /* Clears y-monaco's default block cursor */
+                                    border-radius: 0 !important;  
+                                    width: 24px !important;
+                                    height: 24px !important;
+                                    left: -12px !important;
+                                    top: 0px !important; 
+                                    filter: drop-shadow(0px 10px 15px rgba(0,0,0,0.5)) !important;
+                                    z-index: 90 !important;
+                                }
+                                .yRemoteSelectionHead-${clientId}::before {
+                                    position: absolute !important;
+                                    content: '${name}' !important;
+                                    background-color: ${color} !important;
+                                    top: 26px !important; 
+                                    left: 10px !important;
+                                    color: #fff !important;
+                                    font-size: 11px !important;
+                                    font-family: inherit !important;
+                                    font-weight: 700 !important;
+                                    padding: 4px 8px !important;
+                                    border-radius: 4px !important;
+                                    white-space: nowrap !important;
+                                    z-index: 100 !important;
+                                    pointer-events: none !important;
+                                    opacity: 0 !important;
+                                    transition: opacity 0.2s ease-in-out !important;
+                                    box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3) !important;
+                                    border: 1px solid rgba(255,255,255,0.2) !important;
+                                }
+                                .yRemoteSelectionHead-${clientId}:hover::before {
+                                    opacity: 1 !important;
+                                }
+                            `;
                         }
                     }
                 });
@@ -210,6 +277,11 @@ export default function CollaborativeEditor({
                 let styleElement = document.getElementById(styleId);
                 if (styleElement) {
                     styleElement.innerHTML = dynamicCss;
+                }
+
+                // Expose active users up to the parent component
+                if (onUsersChange) {
+                    onUsersChange(activeUsers);
                 }
 
             }, 50);
@@ -238,42 +310,23 @@ export default function CollaborativeEditor({
             document.head.appendChild(dynamicStyle);
         }
 
-        // We will define the base geometric layout here. 
-        // The dynamic style block above will inject the specific vibrant colors!
+        // Provide absolute global overrides to completely wipe out y-monaco's built-in 
+        // fallback "orange block" styles so they never show up under our custom SVGs
         style.innerHTML = `
             .yRemoteSelectionHead {
                 position: absolute;
-                border-left: 2px solid;
-                border-top: 2px solid;
-                border-bottom: 2px solid;
-                height: 100%;
+                border: none !important;
+                background: transparent !important;
                 box-sizing: border-box;
+                height: 100%;
+                width: 2px !important;
+                margin: 0;
             }
             .yRemoteSelectionHead::after {
-                position: absolute;
-                content: ' ';
-                border: 3px solid;
-                border-radius: 4px;
-                left: -4px;
-                top: -5px;
-            }
-            .yRemoteSelectionHead::before {
-                position: absolute;
-                top: -18px;
-                left: -2px;
-                color: #fff;
-                font-size: 10px;
-                font-family: sans-serif;
-                padding: 1px 4px;
-                border-radius: 2px;
-                white-space: nowrap;
-                z-index: 100;
-                pointer-events: none;
-                opacity: 0;
-                transition: opacity 0.2s ease-in-out;
-            }
-            .yRemoteSelectionHead:hover::before {
-                opacity: 1;
+                border: none !important;
+                background: transparent !important;
+                display: block !important;
+                content: " " !important;
             }
         `;
 

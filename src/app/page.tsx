@@ -259,18 +259,37 @@ export default function LandingPage() {
                             {/* Animated Glow Backdrop */}
                             <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-purple-600 rounded-xl blur-md opacity-40 group-hover:opacity-100 transition duration-500 group-hover:duration-200 animate-pulse"></div>
 
-                            <button
-                                onClick={handleCreateRoom}
-                                className="relative w-full sm:w-auto px-8 py-3.5 bg-slate-900 dark:bg-[#060918] hover:bg-slate-800 dark:hover:bg-[#0a0f25] text-white font-bold rounded-xl shadow-[0_0_15px_rgba(0,0,0,0.1)] dark:shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] transition-all flex items-center justify-center gap-3 border border-slate-700 dark:border-indigo-500/40 overflow-hidden"
-                            >
-                                {/* Button Hover Gradient Sweep */}
-                                <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 dark:from-blue-500/0 dark:via-blue-500/10 dark:to-purple-500/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 ease-in-out"></div>
+                            {/* Logged In State: Creates Room directly */}
+                            <SignedIn>
+                                <button
+                                    onClick={handleCreateRoom}
+                                    className="relative w-full sm:w-auto px-8 py-3.5 bg-slate-900 dark:bg-[#060918] hover:bg-slate-800 dark:hover:bg-[#0a0f25] text-white font-bold rounded-xl shadow-[0_0_15px_rgba(0,0,0,0.1)] dark:shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] transition-all flex items-center justify-center gap-3 border border-slate-700 dark:border-indigo-500/40 overflow-hidden"
+                                >
+                                    {/* Button Hover Gradient Sweep */}
+                                    <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 dark:from-blue-500/0 dark:via-blue-500/10 dark:to-purple-500/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 ease-in-out"></div>
 
-                                <Code2 className="w-5 h-5 text-blue-300 dark:text-blue-400 group-hover:scale-110 group-hover:rotate-3 transition-transform relative z-10" />
-                                <span className="relative z-10 bg-clip-text text-transparent bg-white dark:bg-gradient-to-r dark:from-white dark:to-indigo-200">
-                                    Start Coding Now
-                                </span>
-                            </button>
+                                    <Code2 className="w-5 h-5 text-blue-300 dark:text-blue-400 group-hover:scale-110 group-hover:rotate-3 transition-transform relative z-10" />
+                                    <span className="relative z-10 bg-clip-text text-transparent bg-white dark:bg-gradient-to-r dark:from-white dark:to-indigo-200">
+                                        Start Coding Now
+                                    </span>
+                                </button>
+                            </SignedIn>
+
+                            {/* Guest State: Forces Login Modal when they click */}
+                            <SignedOut>
+                                <SignInButton mode="modal" forceRedirectUrl="/">
+                                    <button
+                                        className="relative w-full sm:w-auto px-8 py-3.5 bg-slate-900 dark:bg-[#060918] hover:bg-slate-800 dark:hover:bg-[#0a0f25] text-white font-bold rounded-xl shadow-[0_0_15px_rgba(0,0,0,0.1)] dark:shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] transition-all flex items-center justify-center gap-3 border border-slate-700 dark:border-indigo-500/40 overflow-hidden"
+                                    >
+                                        <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 dark:from-blue-500/0 dark:via-blue-500/10 dark:to-purple-500/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 ease-in-out"></div>
+
+                                        <Code2 className="w-5 h-5 text-blue-300 dark:text-blue-400 group-hover:scale-110 group-hover:rotate-3 transition-transform relative z-10" />
+                                        <span className="relative z-10 bg-clip-text text-transparent bg-white dark:bg-gradient-to-r dark:from-white dark:to-indigo-200">
+                                            Start Coding Now
+                                        </span>
+                                    </button>
+                                </SignInButton>
+                            </SignedOut>
                         </div>
 
                         <span className="text-slate-400 dark:text-slate-500 font-medium font-mono text-sm hidden sm:block px-2 transition-colors">OR</span>

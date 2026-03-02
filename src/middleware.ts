@@ -1,12 +1,10 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 
-const isProtectedRoute = createRouteMatcher(['/room(.*)'])
-
-export default clerkMiddleware(async (auth, req) => {
-    if (isProtectedRoute(req)) {
-        await auth.protect();
-    }
-})
+// No routes are strictly protected at the edge anymore.
+// We handle Auth dynamically on the frontend via <SignedIn> and <SignedOut>
+export default clerkMiddleware(() => {
+    // Let everything pass through
+});
 
 export const config = {
     matcher: [
