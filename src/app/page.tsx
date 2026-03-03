@@ -127,10 +127,10 @@ export default function LandingPage() {
     const { displayedText1, displayedText2, isFinished } = useTypewriter(["Code Together.", "Execute Anywhere."], 70, 400);
 
     return (
-        <div className="h-screen w-full flex flex-col font-sans relative overflow-hidden bg-slate-50 dark:bg-[#02040a] selection:bg-blue-200 dark:selection:bg-indigo-500/30 transition-colors duration-300">
+        <div className="min-h-screen w-full flex flex-col font-sans relative overflow-x-hidden bg-slate-50 dark:bg-[#02040a] selection:bg-blue-200 dark:selection:bg-indigo-500/30">
 
             {/* Absolute Premium Background - Light & Dark Theme */}
-            <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
+            <div className="fixed inset-0 z-0 pointer-events-none">
                 {/* Soft gradient background - Improved Light Mode */}
                 <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-50/80 via-white to-purple-50/80 dark:hidden z-[-2]"></div>
 
@@ -173,12 +173,12 @@ export default function LandingPage() {
             </div>
 
             {/* Navigation */}
-            <nav className="flex items-center justify-between px-6 py-4 border-b border-slate-200/60 dark:border-white/5 bg-white/70 dark:bg-black/20 backdrop-blur-xl sticky top-0 z-50 shadow-sm dark:shadow-none transition-colors duration-300">
+            <nav className="flex items-center justify-between px-6 py-4 border-b border-slate-200/60 dark:border-white/5 bg-white/70 dark:bg-black/20 backdrop-blur-xl sticky top-0 z-50 shadow-sm dark:shadow-none">
                 <div className="flex items-center gap-2">
                     <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 dark:to-purple-600 flex items-center justify-center font-bold text-lg text-white shadow-md dark:shadow-[0_0_15px_rgba(59,130,246,0.5)]">
                         S
                     </div>
-                    <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-800 to-slate-600 dark:from-blue-400 dark:to-purple-500 tracking-tight transition-colors">
+                    <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-800 to-slate-600 dark:from-blue-400 dark:to-purple-500 tracking-tight">
                         SyncWrite Pro
                     </span>
                 </div>
@@ -199,7 +199,7 @@ export default function LandingPage() {
             </nav>
 
             {/* Hero Section */}
-            <main className="flex-1 flex flex-col items-center justify-center px-4 py-4 text-center relative z-10 w-full max-w-6xl mx-auto h-full overflow-hidden">
+            <main className="flex-1 flex flex-col items-center justify-center px-4 py-12 md:py-4 text-center relative z-10 w-full max-w-6xl mx-auto overflow-visible">
                 <motion.div
                     variants={containerVariants}
                     initial="hidden"
@@ -211,7 +211,7 @@ export default function LandingPage() {
                         initial={{ opacity: 0, y: -20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.5 }}
-                        className="mb-6 mt-2 px-5 py-2 rounded-full border border-slate-200 dark:border-indigo-500/20 bg-white/50 dark:bg-indigo-500/10 shadow-sm dark:shadow-[0_0_20px_rgba(99,102,241,0.1)] text-slate-700 dark:text-indigo-200 text-sm font-medium flex items-center gap-3 backdrop-blur-md transition-colors backdrop-saturate-150"
+                        className="mb-6 mt-2 px-5 py-2 rounded-full border border-slate-200 dark:border-indigo-500/20 bg-white/50 dark:bg-indigo-500/10 shadow-sm dark:shadow-[0_0_20px_rgba(99,102,241,0.1)] text-slate-700 dark:text-indigo-200 text-sm font-medium flex items-center gap-3 backdrop-blur-md backdrop-saturate-150"
                     >
                         <span className="relative flex h-2.5 w-2.5">
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -222,7 +222,7 @@ export default function LandingPage() {
                         <span className="text-emerald-600 dark:text-emerald-400 font-semibold tracking-wide">127 Peers Online</span>
                     </motion.div>
 
-                    <h1 className="text-5xl md:text-7xl lg:text-8xl font-black tracking-tight mb-4 max-w-5xl text-pretty leading-[1.1] text-slate-900 dark:text-white transition-colors flex flex-col items-center min-h-[120px] md:min-h-[220px]">
+                    <h1 className="text-5xl md:text-7xl lg:text-8xl font-black tracking-tight mb-4 max-w-5xl text-pretty leading-[1.1] text-slate-900 dark:text-white flex flex-col items-center min-h-[120px] md:min-h-[220px]">
                         <div className="flex items-center justify-center">
                             <span>{displayedText1}</span>
                             {displayedText2.length === 0 && !isFinished && (
@@ -243,7 +243,7 @@ export default function LandingPage() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={isFinished ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
                         transition={{ duration: 0.8, ease: "easeOut" }}
-                        className="text-base md:text-lg text-slate-600 dark:text-slate-400 mb-8 max-w-2xl leading-relaxed transition-colors tracking-wide"
+                        className="text-base md:text-lg text-slate-600 dark:text-slate-400 mb-8 max-w-2xl leading-relaxed tracking-wide"
                     >
                         The ultimate peer-to-peer collaborative editor. Write code with your team, see live cursors, and execute algorithms instantly over WebSockets.
                     </motion.p>
@@ -292,7 +292,7 @@ export default function LandingPage() {
                             </SignedOut>
                         </div>
 
-                        <span className="text-slate-400 dark:text-slate-500 font-medium font-mono text-sm hidden sm:block px-2 transition-colors">OR</span>
+                        <span className="text-slate-400 dark:text-slate-500 font-medium font-mono text-sm hidden sm:block px-2">OR</span>
 
                         {/* Join Room Form - Secondary Ghost Style */}
                         <form onSubmit={handleJoinRoom} className="w-full sm:w-auto flex-1 relative flex items-center group">
@@ -339,7 +339,7 @@ export default function LandingPage() {
                     initial={{ opacity: 0, y: 40 }}
                     animate={isFinished ? { opacity: 1, y: 0 } : { opacity: 0, y: 40 }}
                     transition={{ duration: 0.8, delay: 0.4, ease: "easeOut" }}
-                    className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mt-16 mb-4 w-full px-4 relative z-10"
+                    className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-16 pb-20 w-full px-4 relative z-10"
                 >
                     {[
                         {
@@ -373,11 +373,11 @@ export default function LandingPage() {
                             <div className="absolute top-0 right-0 p-4 opacity-[0.03] dark:opacity-[0.05] group-hover:scale-150 transition-transform duration-700 ease-out group-hover:opacity-[0.08] dark:group-hover:opacity-10 group-hover:rotate-12">
                                 {feature.icon}
                             </div>
-                            <div className={`w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center mb-4 border border-slate-100 dark:shadow-inner transition-colors ${feature.iconBg}`}>
+                            <div className={`w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center mb-4 border border-slate-100 dark:shadow-inner ${feature.iconBg}`}>
                                 {feature.icon}
                             </div>
-                            <h3 className="text-lg font-bold text-slate-800 dark:text-gray-100 mb-2 transition-colors">{feature.title}</h3>
-                            <p className="text-xs md:text-sm text-slate-600 dark:text-slate-400 leading-relaxed font-light transition-colors tracking-wide">{feature.desc}</p>
+                            <h3 className="text-lg font-bold text-slate-800 dark:text-gray-100 mb-2">{feature.title}</h3>
+                            <p className="text-xs md:text-sm text-slate-600 dark:text-slate-400 leading-relaxed font-light tracking-wide">{feature.desc}</p>
                         </motion.div>
                     ))}
                 </motion.div>

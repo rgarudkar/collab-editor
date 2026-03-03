@@ -19,7 +19,7 @@ export default function RootLayout({
   return (
     <ClerkProvider>
       <html lang="en" suppressHydrationWarning>
-        <body className={`${inter.className} bg-white text-slate-900 dark:bg-[#02040a] dark:text-white transition-colors duration-300 antialiased`}>
+        <body className={`${inter.className} bg-white text-slate-900 dark:bg-[#02040a] dark:text-white antialiased overflow-x-hidden`}>
           <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
             {children}
           </ThemeProvider>

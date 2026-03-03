@@ -208,14 +208,14 @@ export default function Home() {
   if (!roomId) {
     // Prevent rendering the editor until we have a room ID to avoid split-brain
     return (
-      <main className="min-h-screen bg-slate-50 dark:bg-gradient-to-br dark:from-[#0d1117] dark:to-[#161b22] flex items-center justify-center transition-colors duration-300">
+      <main className="min-h-screen bg-slate-50 dark:bg-gradient-to-br dark:from-[#0d1117] dark:to-[#161b22] flex items-center justify-center">
         <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 dark:bg-gradient-to-br dark:from-[#0d1117] dark:to-[#161b22] text-slate-800 dark:text-white p-4 md:p-8 flex flex-col font-sans selection:bg-blue-500/30 transition-colors duration-300">
+    <main className="min-h-screen bg-slate-50 dark:bg-gradient-to-br dark:from-[#0d1117] dark:to-[#161b22] text-slate-800 dark:text-white p-4 md:p-8 flex flex-col font-sans selection:bg-blue-500/30">
       {/* Header */}
       <header className="flex items-center justify-between mb-6 pb-4 border-b border-slate-200 dark:border-gray-800">
         <div>
@@ -268,13 +268,13 @@ export default function Home() {
       </header>
 
       {/* Main Layout Area */}
-      <div className="flex-1 flex flex-col lg:flex-row gap-6 h-full min-h-0">
+      <div className="flex-1 flex flex-col lg:flex-row gap-6 w-full pb-8">
         {/* Editor Section */}
-        <section className="flex-1 rounded-xl relative flex flex-col min-h-[500px] shadow-sm dark:shadow-none transition-all">
-          <div className="absolute -inset-[1px] bg-gradient-to-b from-blue-200 to-purple-200 dark:from-blue-500/20 dark:to-purple-500/20 rounded-xl z-0 blur-sm transition-colors"></div>
-          <div className="relative z-10 w-full h-full p-1 bg-white dark:bg-[#1e1e1e]/90 rounded-xl shadow-xl dark:shadow-none backdrop-blur-md transition-colors border border-slate-200 dark:border-transparent">
+        <section className="flex-[2] rounded-xl relative flex flex-col min-h-[500px] lg:min-h-0 shadow-sm dark:shadow-none">
+          <div className="absolute -inset-[1px] bg-gradient-to-b from-blue-200 to-purple-200 dark:from-blue-500/20 dark:to-purple-500/20 rounded-xl z-0 blur-sm"></div>
+          <div className="relative z-10 w-full h-full p-1 bg-white dark:bg-[#1e1e1e]/90 rounded-xl shadow-xl dark:shadow-none backdrop-blur-md border border-slate-200 dark:border-transparent flex flex-col">
             {/* Header bar for editor */}
-            <div className="flex items-center justify-between px-4 py-2 bg-slate-100 dark:bg-[#252526] rounded-t-lg border-b border-slate-200 dark:border-gray-800 transition-colors">
+            <div className="flex items-center justify-between px-4 py-2 bg-slate-100 dark:bg-[#252526] rounded-t-lg border-b border-slate-200 dark:border-gray-800">
               <div className="flex items-center gap-3">
                 <span className="text-xs font-mono text-slate-500 dark:text-gray-400">index.{selectedLanguage === 'python' ? 'py' : selectedLanguage === 'cpp' ? 'cpp' : 'js'}</span>
 
@@ -355,9 +355,9 @@ export default function Home() {
         </section>
 
         {/* Sidebar / Tools Section */}
-        <aside className="w-full lg:w-80 flex flex-col gap-6 shrink-0">
+        <aside className="w-full lg:w-80 flex flex-col gap-6 shrink-0 lg:h-auto overflow-visible">
           {/* Output / Execution Area */}
-          <div className="bg-white/80 dark:bg-[#161b22]/80 border border-slate-200 dark:border-gray-800 rounded-xl p-4 flex-1 backdrop-blur-md shadow-lg dark:shadow-xl flex flex-col transition-colors">
+          <div className="bg-white/80 dark:bg-[#161b22]/80 border border-slate-200 dark:border-gray-800 rounded-xl p-4 flex-1 backdrop-blur-md shadow-lg dark:shadow-xl flex flex-col min-h-[300px]">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-slate-700 dark:text-gray-300">Execution Output</h2>
               <button
@@ -375,7 +375,7 @@ export default function Home() {
                 )}
               </button>
             </div>
-            <div className="flex-1 bg-slate-50 dark:bg-black/40 rounded-lg border border-slate-200 dark:border-gray-800/50 p-3 font-mono text-xs text-slate-600 dark:text-gray-400 overflow-y-auto whitespace-pre-wrap shadow-inner transition-colors">
+            <div className="flex-1 bg-slate-50 dark:bg-black/40 rounded-lg border border-slate-200 dark:border-gray-800/50 p-3 font-mono text-xs text-slate-600 dark:text-gray-400 overflow-y-auto whitespace-pre-wrap shadow-inner">
               {outputLogs.length === 0 ? (
                 <span className="opacity-50">{"> Ready for execution..."}</span>
               ) : (
@@ -389,7 +389,7 @@ export default function Home() {
           </div>
 
           {/* Time Travel / Debugging Panel */}
-          <div className="h-44 bg-white/80 dark:bg-[#161b22]/80 border border-slate-200 dark:border-gray-800 rounded-xl p-4 backdrop-blur-md shadow-lg dark:shadow-xl flex flex-col transition-colors">
+          <div className="h-44 bg-white/80 dark:bg-[#161b22]/80 border border-slate-200 dark:border-gray-800 rounded-xl p-4 backdrop-blur-md shadow-lg dark:shadow-xl flex flex-col">
             <h2 className="text-sm font-semibold text-slate-700 dark:text-gray-300 mb-1 flex items-center justify-between">
               <span>Time-Travel Debugging</span>
               <span className="text-xs bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-500/30">

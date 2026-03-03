@@ -29,13 +29,15 @@ export default function CollaborativeEditor({
     onYDocReady,
     onUsersChange,
 }: CollaborativeEditorProps) {
-    const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(
-        null
-    );
+    const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
     const [isBindingComplete, setIsBindingComplete] = useState(false);
     const providerRef = useRef<WebrtcProvider | null>(null);
     const bindingRef = useRef<MonacoBinding | null>(null);
     const ydocRef = useRef<Y.Doc | null>(null);
+    const mutationObserverRef = useRef<MutationObserver | null>(null);
+
+    // Maps clientId → { color, name } so the MutationObserver can decorate new elements
+    const cursorMetaRef = useRef<Map<number, { color: string; name: string }>>(new Map());
 
     const getColorFromName = (name: string) => {
         const vibrantColors = [
@@ -50,8 +52,145 @@ export default function CollaborativeEditor({
         return vibrantColors[Math.abs(hash) % vibrantColors.length];
     };
 
+    // "Ramgopal Garudkar" → "RG" | "Anonymous Fox" → "AF" | "Alice" → "Al"
+    const getInitials = (name: string): string => {
+        const parts = name.trim().split(/\s+/);
+        if (parts.length >= 2) {
+            return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+        }
+        return name.slice(0, 2).toUpperCase();
+    };
+
     const { user } = useUser();
     const [isRoomFull, setIsRoomFull] = useState(false);
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Inject real SVG + badge DOM nodes directly into a .yRemoteSelectionHead element.
+    // This bypasses all ::after/::before CSS issues inside Monaco's sandboxed DOM.
+    // ─────────────────────────────────────────────────────────────────────────────
+    const decorateCursorHead = (el: Element, color: string, name: string) => {
+        const key = color + name;
+        if ((el as HTMLElement).dataset.decorated === key) return;
+        (el as HTMLElement).dataset.decorated = key;
+
+        const initials = getInitials(name);
+
+        // Wipe anything y-monaco injected
+        el.innerHTML = '';
+
+        // ── Stem: apply styles inline so nothing can override them ──
+        const stem = el as HTMLElement;
+        stem.style.cssText = `
+            position: absolute !important;
+            width: 2px !important;
+            height: 100% !important;
+            background: ${color} !important;
+            box-shadow: 0 0 8px 2px ${color}88 !important;
+            border: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: visible !important;
+            pointer-events: none !important;
+            border-radius: 1px !important;
+        `;
+
+        // ── SVG arrow pointer (real DOM node, not background-image) ──
+        const svgNS = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(svgNS, "svg");
+        svg.setAttribute("width", "18");
+        svg.setAttribute("height", "22");
+        svg.setAttribute("viewBox", "0 0 18 22");
+        svg.style.cssText = `
+            position: absolute;
+            left: -1px;
+            top: 0;
+            overflow: visible;
+            pointer-events: none;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+            animation: yjsCursorAppear 0.22s cubic-bezier(0.34,1.56,0.64,1) both;
+            transform-origin: top left;
+            z-index: 99;
+        `;
+
+        // Classic triangular pointer — tip at top-left (2,1)
+        const path = document.createElementNS(svgNS, "path");
+        path.setAttribute("d", "M2,1 L2,17 L6,13 L9,20 L11.5,19 L8.5,12 L14,12 Z");
+        path.setAttribute("fill", color);
+        path.setAttribute("stroke", "rgba(255,255,255,0.9)");
+        path.setAttribute("stroke-width", "1.2");
+        path.setAttribute("stroke-linejoin", "round");
+        path.setAttribute("stroke-linecap", "round");
+        svg.appendChild(path);
+
+        // ── Name badge ──
+        const badge = document.createElement("div");
+        badge.style.cssText = `
+            position: absolute;
+            top: 20px;
+            left: 12px;
+            background: ${color};
+            color: #fff;
+            font-family: ui-monospace, 'SF Mono', 'Fira Code', Consolas, monospace;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            padding: 2px 7px;
+            border-radius: 0 5px 5px 5px;
+            white-space: nowrap;
+            pointer-events: none;
+            box-shadow: 0 3px 12px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.15);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+            animation: yjsBadgePop 0.28s cubic-bezier(0.34,1.56,0.64,1) both;
+            z-index: 100;
+            user-select: none;
+            min-width: 22px;
+            text-align: center;
+            transition: padding 0.15s ease, font-size 0.15s ease, border-radius 0.15s ease;
+        `;
+        badge.textContent = initials;
+
+        // ── Invisible hit-area for hover (badge itself has pointer-events:none) ──
+        const hitArea = document.createElement("div");
+        hitArea.style.cssText = `
+            position: absolute;
+            top: 18px;
+            left: 10px;
+            width: 80px;
+            height: 24px;
+            pointer-events: auto;
+            z-index: 101;
+            cursor: default;
+        `;
+
+        hitArea.addEventListener("mouseenter", () => {
+            badge.textContent = name;
+            badge.style.padding = "3px 9px";
+            badge.style.fontSize = "11px";
+            badge.style.letterSpacing = "0.02em";
+            badge.style.borderRadius = "0 6px 6px 6px";
+            hitArea.style.width = `${Math.max(80, name.length * 7 + 20)}px`;
+        });
+        hitArea.addEventListener("mouseleave", () => {
+            badge.textContent = initials;
+            badge.style.padding = "2px 7px";
+            badge.style.fontSize = "10px";
+            badge.style.letterSpacing = "0.06em";
+            badge.style.borderRadius = "0 5px 5px 5px";
+            hitArea.style.width = "80px";
+        });
+
+        el.appendChild(svg);
+        el.appendChild(badge);
+        el.appendChild(hitArea);
+    };
+
+    // Scan the entire DOM for known cursor elements and decorate them
+    const refreshCursorDecorations = () => {
+        cursorMetaRef.current.forEach(({ color, name }, clientId) => {
+            document.querySelectorAll(`.yRemoteSelectionHead-${clientId}`)
+                .forEach(el => decorateCursorHead(el, color, name));
+        });
+    };
 
     const handleEditorDidMount = (
         editor: monaco.editor.IStandaloneCodeEditor,
@@ -59,29 +198,17 @@ export default function CollaborativeEditor({
     ) => {
         monacoEditorRef.current = editor;
 
-        // Initialize Yjs Document
         const ydoc = new Y.Doc();
         ydocRef.current = ydoc;
+        if (onYDocReady) onYDocReady(ydoc);
 
-        if (onYDocReady) {
-            onYDocReady(ydoc);
-        }
-
-        // WebrtcProvider connects to the signaling server and peers
-        // Use the current window's hostname to allow connections from other devices on the same network
-        // (e.g. if accessed via 192.168.1.X, the websocket should connect to 192.168.1.X)
         const signalingHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
         const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL || `ws://${signalingHost}:4444`;
 
-        const provider = new WebrtcProvider(roomName, ydoc, {
-            signaling: [signalingUrl],
-        });
+        const provider = new WebrtcProvider(roomName, ydoc, { signaling: [signalingUrl] });
         providerRef.current = provider;
 
-        // Get the shared text type
         const ytext = ydoc.getText("monaco");
-
-        // Bind Yjs to the Monaco Editor
         const binding = new MonacoBinding(
             ytext,
             monacoEditorRef.current.getModel()!,
@@ -90,47 +217,33 @@ export default function CollaborativeEditor({
         );
         bindingRef.current = binding;
 
-        // Shared Logs Array
+        // Shared logs
         const ylogs = ydoc.getArray<string>("execution-logs");
         if (onOutputChange) {
-            ylogs.observe(() => {
-                onOutputChange(ylogs.toArray());
-            });
-            // Initial logs push
+            ylogs.observe(() => onOutputChange(ylogs.toArray()));
             onOutputChange(ylogs.toArray());
         }
-
-        // Expose a function to push new logs to the array
         if (onPushLogRef) {
             onPushLogRef((newLogs: string[]) => {
-                ylogs.delete(0, ylogs.length); // Clear old logs
-                ylogs.push(newLogs); // Push new logs. This syncs over WebRTC
+                ylogs.delete(0, ylogs.length);
+                ylogs.push(newLogs);
             });
         }
 
-        // Shared Language Map
+        // Shared language
         const ystate = ydoc.getMap<string>("editor-state");
         if (onLanguageChange) {
             ystate.observe(() => {
                 const syncedLang = ystate.get("language");
-                if (syncedLang) {
-                    onLanguageChange(syncedLang);
-                }
+                if (syncedLang) onLanguageChange(syncedLang);
             });
-            // Initial sync if taking over room
-            if (ystate.has("language")) {
-                onLanguageChange(ystate.get("language")!);
-            }
+            if (ystate.has("language")) onLanguageChange(ystate.get("language")!);
         }
-
-        // Expose a function to change the global language
         if (onPushLanguageRef) {
-            onPushLanguageRef((newLang: string) => {
-                ystate.set("language", newLang);
-            });
+            onPushLanguageRef((newLang: string) => ystate.set("language", newLang));
         }
 
-        // Set cursor and awareness info using Clerk identity (or Guest fallback)
+        // Identity
         const generateGuestIdentity = () => {
             const animals = ["Fox", "Panda", "Tiger", "Penguin", "Koala", "Lion", "Wolf", "Leopard"];
             const randomAnimal = animals[Math.floor(Math.random() * animals.length)];
@@ -142,7 +255,6 @@ export default function CollaborativeEditor({
 
         const isGuest = !user;
         const guestIdentity = isGuest ? generateGuestIdentity() : null;
-
         const userName = user?.fullName || user?.firstName || user?.username || guestIdentity?.name || "Guest";
         const userAvatar = user?.imageUrl || guestIdentity?.avatar || "";
         const computedColor = getColorFromName(userName);
@@ -154,190 +266,98 @@ export default function CollaborativeEditor({
             isGuest: isGuest
         });
 
-        // HACK: y-monaco doesn't automatically add the user's name to the DOM element
-        // for the cursor header, and doesn't inject distinct CSS per user properly.
-        // We observe awareness changes to explicitly map client IDs to their specific colors
-        // and inject custom CSS rules per connected user to ensure robust rendering.
+        // ── Awareness → sync cursorMetaRef → redecorate ──
         provider.awareness.on('change', () => {
             setTimeout(() => {
                 const states = Array.from(provider.awareness.getStates().entries());
 
-                // Room Limiting Logic (Max 4 Users)
                 if (states.length > 4) {
-                    // Yjs typically assigns the highest ClientID incrementally but we can check 
-                    // if our ID is arbitrarily excluded or just kill the connection.
                     setIsRoomFull(true);
                     provider.disconnect();
                     return;
                 }
 
-                // 1. Maintain dynamic CSS for all connected peers
-                let dynamicCss = '';
-
-                // Track active users for the header UI
                 const activeUsers: any[] = [];
-                const seenClientIds = new Set();
+                const seenIds = new Set<number>();
+                cursorMetaRef.current.clear();
 
-                // 2. Map data attributes onto the DOM by injecting CSS targeting y-monaco's generated classes
                 states.forEach(([clientId, state]) => {
-                    if (state?.user) {
-                        const color = state.user.color;
-                        const name = state.user.name;
-                        const avatar = state.user.avatar;
+                    if (state?.user && !seenIds.has(clientId)) {
+                        seenIds.add(clientId);
+                        const { color, name, avatar } = state.user;
 
-                        // Create a translucent version of the hex color for text selections
-                        let r = 0, g = 0, b = 0;
-                        if (color.length === 7) {
-                            r = parseInt(color.slice(1, 3), 16);
-                            g = parseInt(color.slice(3, 5), 16);
-                            b = parseInt(color.slice(5, 7), 16);
-                        }
-                        const translucentColor = `rgba(${r}, ${g}, ${b}, 0.15)`;
-
-                        // Prevent duplicates and add to active users list
-                        if (!seenClientIds.has(clientId)) {
-                            seenClientIds.add(clientId);
-                            activeUsers.push({
-                                clientId,
-                                name,
-                                color,
-                                avatar,
-                                isMe: clientId === ydoc.clientID
-                            });
-                        }
-
-                        // We skip generating dynamic CSS for the local user because y-monaco only manages remote cursors
                         if (clientId !== ydoc.clientID) {
-                            // Generate CSS strictly for this specific user's cursor
-                            const svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2" style="transform: rotate(-25deg);"><path d="M4 4l5.5 16 3-6.5L19 10.5 4 4z"></path></svg>`;
-                            const svgDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgString)}`;
-
-                            // Y-monaco adds the following classes to decorations: .yRemoteSelection-${clientId} and .yRemoteSelectionHead-${clientId}
-                            // By using these exact selectors with !important, we override y-monaco's default inline <style> injection.
-                            dynamicCss += `
-                                .yRemoteSelection-${clientId} {
-                                    background-color: ${translucentColor} !important;
-                                }
-                                .yRemoteSelectionHead-${clientId} {
-                                    position: absolute !important;
-                                    border: none !important;
-                                    background: transparent !important;
-                                    height: 100% !important;
-                                    width: 2px !important;
-                                    box-sizing: border-box !important;
-                                    margin: 0 !important;
-                                    padding: 0 !important;
-                                }
-                                .yRemoteSelectionHead-${clientId}::after {
-                                    position: absolute !important;
-                                    content: ' ' !important;
-                                    background-image: url('${svgDataUrl}') !important;
-                                    background-size: contain !important;
-                                    background-repeat: no-repeat !important;
-                                    background-position: center !important;
-                                    border: none !important;      /* Clears y-monaco's default block cursor */
-                                    border-radius: 0 !important;  
-                                    width: 24px !important;
-                                    height: 24px !important;
-                                    left: -12px !important;
-                                    top: 0px !important; 
-                                    filter: drop-shadow(0px 10px 15px rgba(0,0,0,0.5)) !important;
-                                    z-index: 90 !important;
-                                }
-                                .yRemoteSelectionHead-${clientId}::before {
-                                    position: absolute !important;
-                                    content: '${name}' !important;
-                                    background-color: ${color} !important;
-                                    top: 26px !important; 
-                                    left: 10px !important;
-                                    color: #fff !important;
-                                    font-size: 11px !important;
-                                    font-family: inherit !important;
-                                    font-weight: 700 !important;
-                                    padding: 4px 8px !important;
-                                    border-radius: 4px !important;
-                                    white-space: nowrap !important;
-                                    z-index: 100 !important;
-                                    pointer-events: none !important;
-                                    opacity: 0 !important;
-                                    transition: opacity 0.2s ease-in-out !important;
-                                    box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3) !important;
-                                    border: 1px solid rgba(255,255,255,0.2) !important;
-                                }
-                                .yRemoteSelectionHead-${clientId}:hover::before {
-                                    opacity: 1 !important;
-                                }
-                            `;
+                            cursorMetaRef.current.set(clientId, { color, name });
                         }
+
+                        activeUsers.push({ clientId, name, color, avatar, isMe: clientId === ydoc.clientID });
                     }
                 });
 
-                // Inject the generated per-user CSS into our style tag
-                const styleId = `y-monaco-dynamic-cursors-${roomName}`;
-                let styleElement = document.getElementById(styleId);
-                if (styleElement) {
-                    styleElement.innerHTML = dynamicCss;
-                }
-
-                // Expose active users up to the parent component
-                if (onUsersChange) {
-                    onUsersChange(activeUsers);
-                }
-
+                refreshCursorDecorations();
+                if (onUsersChange) onUsersChange(activeUsers);
             }, 50);
         });
+
+        // ── MutationObserver: catch new cursor elements as Monaco re-renders ──
+        const editorDom = editor.getDomNode();
+        if (editorDom) {
+            const observer = new MutationObserver(() => refreshCursorDecorations());
+            observer.observe(editorDom, { childList: true, subtree: true });
+            mutationObserverRef.current = observer;
+        }
 
         setIsBindingComplete(true);
     };
 
     useEffect(() => {
-        // Inject core layout CSS for y-monaco remote cursors (shared skeleton)
-        const styleId = `y-monaco-core-style-${roomName}`;
-        let style = document.getElementById(styleId) as HTMLStyleElement;
-
-        const dynamicStyleId = `y-monaco-dynamic-cursors-${roomName}`;
-        let dynamicStyle = document.getElementById(dynamicStyleId) as HTMLStyleElement;
-
-        if (!style) {
-            style = document.createElement('style');
+        // Keyframe animations + strip y-monaco's default orange cursor — injected once globally
+        const styleId = `y-monaco-cursor-keyframes-${roomName}`;
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
             style.id = styleId;
+            style.innerHTML = `
+                @keyframes yjsCursorAppear {
+                    from { opacity: 0; transform: scale(0.5) translateY(-6px); }
+                    to   { opacity: 1; transform: scale(1) translateY(0); }
+                }
+                @keyframes yjsBadgePop {
+                    0%   { opacity: 0; transform: scale(0.75) translateY(-4px); }
+                    65%  { opacity: 1; transform: scale(1.07) translateY(1px); }
+                    100% { opacity: 1; transform: scale(1)    translateY(0); }
+                }
+
+                /* Nuke every possible y-monaco default style */
+                .yRemoteSelectionHead,
+                [class^="yRemoteSelectionHead"] {
+                    border: none !important;
+                    border-left: none !important;
+                    border-top: none !important;
+                    border-bottom: none !important;
+                    background: transparent !important;
+                    overflow: visible !important;
+                }
+                .yRemoteSelectionHead::after,
+                [class^="yRemoteSelectionHead"]::after,
+                .yRemoteSelectionHead::before,
+                [class^="yRemoteSelectionHead"]::before {
+                    display: none !important;
+                    content: none !important;
+                    border: none !important;
+                    background: transparent !important;
+                    width: 0 !important;
+                    height: 0 !important;
+                }
+            `;
             document.head.appendChild(style);
         }
 
-        if (!dynamicStyle) {
-            dynamicStyle = document.createElement('style');
-            dynamicStyle.id = dynamicStyleId;
-            document.head.appendChild(dynamicStyle);
-        }
-
-        // Provide absolute global overrides to completely wipe out y-monaco's built-in 
-        // fallback "orange block" styles so they never show up under our custom SVGs
-        style.innerHTML = `
-            .yRemoteSelectionHead {
-                position: absolute;
-                border: none !important;
-                background: transparent !important;
-                box-sizing: border-box;
-                height: 100%;
-                width: 2px !important;
-                margin: 0;
-            }
-            .yRemoteSelectionHead::after {
-                border: none !important;
-                background: transparent !important;
-                display: block !important;
-                content: " " !important;
-            }
-        `;
-
         return () => {
-            // Cleanup on unmount
-            if (style && style.parentNode) {
-                style.parentNode.removeChild(style);
-            }
+            mutationObserverRef.current?.disconnect();
             bindingRef.current?.destroy();
             providerRef.current?.destroy();
             ydocRef.current?.destroy();
+            document.getElementById(styleId)?.remove();
         };
     }, [roomName]);
 
@@ -346,7 +366,9 @@ export default function CollaborativeEditor({
             {isRoomFull && (
                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#1e1e1e]/90 backdrop-blur-md">
                     <div className="flex flex-col items-center max-w-sm text-center bg-gray-900 border border-red-500/50 p-8 rounded-2xl shadow-2xl">
-                        <svg className="w-16 h-16 text-red-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                        <svg className="w-16 h-16 text-red-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
                         <h2 className="text-xl font-bold text-white mb-2">Workspace Full</h2>
                         <p className="text-gray-400 text-sm">This collaborative session has reached maximum capacity (4 users) to ensure high-performance peer-to-peer syncing.</p>
                     </div>
