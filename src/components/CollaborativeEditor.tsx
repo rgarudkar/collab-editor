@@ -4,13 +4,15 @@ import React, { useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
 import { MonacoBinding } from "y-monaco";
-import { useUser } from "@clerk/nextjs";
+import { useSession } from "next-auth/react";
 import Editor, { useMonaco } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 
 interface CollaborativeEditorProps {
     roomName: string;
     language?: string;
+    readOnly?: boolean;
+    previewValue?: string;
     onLanguageChange?: (lang: string) => void;
     onOutputChange?: (logs: string[]) => void;
     onPushLogRef?: (pushFn: (logs: string[]) => void) => void;
@@ -22,6 +24,8 @@ interface CollaborativeEditorProps {
 export default function CollaborativeEditor({
     roomName,
     language = "javascript",
+    readOnly = false,
+    previewValue = "",
     onLanguageChange,
     onOutputChange,
     onPushLogRef,
@@ -29,15 +33,15 @@ export default function CollaborativeEditor({
     onYDocReady,
     onUsersChange,
 }: CollaborativeEditorProps) {
-    const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+    const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(null);
     const [isBindingComplete, setIsBindingComplete] = useState(false);
+    const [isYReady, setIsYReady] = useState(false);
     const providerRef = useRef<WebrtcProvider | null>(null);
     const bindingRef = useRef<MonacoBinding | null>(null);
     const ydocRef = useRef<Y.Doc | null>(null);
-    const mutationObserverRef = useRef<MutationObserver | null>(null);
 
-    // Maps clientId → { color, name } so the MutationObserver can decorate new elements
-    const cursorMetaRef = useRef<Map<number, { color: string; name: string }>>(new Map());
+    // Track which clients have already run their entrance animation
+    const decoratedClientsRef = useRef<Set<number>>(new Set());
 
     const getColorFromName = (name: string) => {
         const vibrantColors = [
@@ -52,329 +56,266 @@ export default function CollaborativeEditor({
         return vibrantColors[Math.abs(hash) % vibrantColors.length];
     };
 
-    // "Ramgopal Garudkar" → "RG" | "Anonymous Fox" → "AF" | "Alice" → "Al"
-    const getInitials = (name: string): string => {
-        const parts = name.trim().split(/\s+/);
-        if (parts.length >= 2) {
-            return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-        }
-        return name.slice(0, 2).toUpperCase();
-    };
-
-    const { user } = useUser();
+    const { data: session } = useSession();
+    const user = session?.user;
     const [isRoomFull, setIsRoomFull] = useState(false);
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Inject real SVG + badge DOM nodes directly into a .yRemoteSelectionHead element.
-    // This bypasses all ::after/::before CSS issues inside Monaco's sandboxed DOM.
-    // ─────────────────────────────────────────────────────────────────────────────
-    const decorateCursorHead = (el: Element, color: string, name: string) => {
-        const key = color + name;
-        if ((el as HTMLElement).dataset.decorated === key) return;
-        (el as HTMLElement).dataset.decorated = key;
+    // Generate clean CSS class injection strictly based on awareness
+    const injectCursorStyles = (activeUsers: any[]) => {
+        let styleStr = '';
+        activeUsers.forEach(u => {
+            const isNew = !decoratedClientsRef.current.has(u.clientId);
+            if (isNew) decoratedClientsRef.current.add(u.clientId);
 
-        const initials = getInitials(name);
+            const firstName = u.name.trim().split(/\s+/)[0] || 'Guest';
+            const rgbColor = u.color;
 
-        // Wipe anything y-monaco injected
-        el.innerHTML = '';
-
-        // ── Stem: apply styles inline so nothing can override them ──
-        const stem = el as HTMLElement;
-        stem.style.cssText = `
-            position: absolute !important;
-            width: 2px !important;
-            height: 100% !important;
-            background: ${color} !important;
-            box-shadow: 0 0 8px 2px ${color}88 !important;
-            border: none !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow: visible !important;
-            pointer-events: none !important;
-            border-radius: 1px !important;
-        `;
-
-        // ── SVG arrow pointer (real DOM node, not background-image) ──
-        const svgNS = "http://www.w3.org/2000/svg";
-        const svg = document.createElementNS(svgNS, "svg");
-        svg.setAttribute("width", "18");
-        svg.setAttribute("height", "22");
-        svg.setAttribute("viewBox", "0 0 18 22");
-        svg.style.cssText = `
-            position: absolute;
-            left: -1px;
-            top: 0;
-            overflow: visible;
-            pointer-events: none;
-            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
-            animation: yjsCursorAppear 0.22s cubic-bezier(0.34,1.56,0.64,1) both;
-            transform-origin: top left;
-            z-index: 99;
-        `;
-
-        // Classic triangular pointer — tip at top-left (2,1)
-        const path = document.createElementNS(svgNS, "path");
-        path.setAttribute("d", "M2,1 L2,17 L6,13 L9,20 L11.5,19 L8.5,12 L14,12 Z");
-        path.setAttribute("fill", color);
-        path.setAttribute("stroke", "rgba(255,255,255,0.9)");
-        path.setAttribute("stroke-width", "1.2");
-        path.setAttribute("stroke-linejoin", "round");
-        path.setAttribute("stroke-linecap", "round");
-        svg.appendChild(path);
-
-        // ── Name badge ──
-        const badge = document.createElement("div");
-        badge.style.cssText = `
-            position: absolute;
-            top: 20px;
-            left: 12px;
-            background: ${color};
-            color: #fff;
-            font-family: ui-monospace, 'SF Mono', 'Fira Code', Consolas, monospace;
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.06em;
-            padding: 2px 7px;
-            border-radius: 0 5px 5px 5px;
-            white-space: nowrap;
-            pointer-events: none;
-            box-shadow: 0 3px 12px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.15);
-            text-shadow: 0 1px 2px rgba(0,0,0,0.4);
-            animation: yjsBadgePop 0.28s cubic-bezier(0.34,1.56,0.64,1) both;
-            z-index: 100;
-            user-select: none;
-            min-width: 22px;
-            text-align: center;
-            transition: padding 0.15s ease, font-size 0.15s ease, border-radius 0.15s ease;
-        `;
-        badge.textContent = initials;
-
-        // ── Invisible hit-area for hover (badge itself has pointer-events:none) ──
-        const hitArea = document.createElement("div");
-        hitArea.style.cssText = `
-            position: absolute;
-            top: 18px;
-            left: 10px;
-            width: 80px;
-            height: 24px;
-            pointer-events: auto;
-            z-index: 101;
-            cursor: default;
-        `;
-
-        hitArea.addEventListener("mouseenter", () => {
-            badge.textContent = name;
-            badge.style.padding = "3px 9px";
-            badge.style.fontSize = "11px";
-            badge.style.letterSpacing = "0.02em";
-            badge.style.borderRadius = "0 6px 6px 6px";
-            hitArea.style.width = `${Math.max(80, name.length * 7 + 20)}px`;
-        });
-        hitArea.addEventListener("mouseleave", () => {
-            badge.textContent = initials;
-            badge.style.padding = "2px 7px";
-            badge.style.fontSize = "10px";
-            badge.style.letterSpacing = "0.06em";
-            badge.style.borderRadius = "0 5px 5px 5px";
-            hitArea.style.width = "80px";
+            styleStr += `
+                .yRemoteSelectionHead-${u.clientId} {
+                    position: absolute;
+                    box-sizing: border-box;
+                    height: 100%;
+                    width: 2px;
+                    background-color: ${rgbColor} !important;
+                    background-image: linear-gradient(to bottom, ${rgbColor}, ${rgbColor}44) !important;
+                    box-shadow: 0 0 8px 1px ${rgbColor}88 !important;
+                    border-radius: 2px;
+                    z-index: 4;
+                }
+                
+                .yRemoteSelection-${u.clientId} {
+                    background-color: ${rgbColor}33 !important;
+                    border-radius: 2px;
+                }
+                
+                /* Sleek Anchor Dot connecting the caret to the flag */
+                .yRemoteSelectionHead-${u.clientId}::before {
+                    content: '';
+                    position: absolute;
+                    top: -4px;
+                    left: -3px;
+                    width: 8px;
+                    height: 8px;
+                    background: ${rgbColor};
+                    border: 1.5px solid #ffffff;
+                    border-radius: 50%;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.3), 0 0 8px ${rgbColor}AA;
+                    box-sizing: border-box;
+                    z-index: 5;
+                    ${isNew ? 'animation: cursorAnchorAppear 0.3s cubic-bezier(0.34,1.56,0.64,1) forwards;' : ''}
+                }
+                
+                /* Modern Name Tag / Flag */
+                .yRemoteSelectionHead-${u.clientId}::after {
+                    content: '${firstName}';
+                    position: absolute;
+                    bottom: calc(100% + 6px);
+                    left: 2px;
+                    background: ${rgbColor};
+                    color: #fff;
+                    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+                    font-size: 11px;
+                    font-weight: 600;
+                    line-height: 1;
+                    padding: 4px 8px;
+                    border-radius: 6px 6px 6px 0;
+                    white-space: nowrap;
+                    pointer-events: none;
+                    box-shadow: 0 6px 12px rgba(0,0,0,0.15), inset 0 0 0 1px rgba(255,255,255,0.2);
+                    text-shadow: 0 1px 1.5px rgba(0,0,0,0.2);
+                    z-index: 5;
+                    transform-origin: bottom left;
+                    ${isNew ? 'animation: cursorBadgeAppear 0.4s cubic-bezier(0.34,1.56,0.64,1) forwards;' : ''}
+                }
+            `;
         });
 
-        el.appendChild(svg);
-        el.appendChild(badge);
-        el.appendChild(hitArea);
+        // Inject into DOM
+        const styleId = `yjs-dynamic-cursors-${roomName}`;
+        let styleTag = document.getElementById(styleId);
+        if (!styleTag) {
+            styleTag = document.createElement('style');
+            styleTag.id = styleId;
+            document.head.appendChild(styleTag);
+        }
+        styleTag.innerHTML = styleStr;
     };
 
-    // Scan the entire DOM for known cursor elements and decorate them
-    const refreshCursorDecorations = () => {
-        cursorMetaRef.current.forEach(({ color, name }, clientId) => {
-            document.querySelectorAll(`.yRemoteSelectionHead-${clientId}`)
-                .forEach(el => decorateCursorHead(el, color, name));
-        });
-    };
-
-    const handleEditorDidMount = (
-        editor: monaco.editor.IStandaloneCodeEditor,
-        monacoInstance: typeof monaco
-    ) => {
-        monacoEditorRef.current = editor;
-
+    // Initialize YDoc and Provider once
+    useEffect(() => {
         const ydoc = new Y.Doc();
         ydocRef.current = ydoc;
         if (onYDocReady) onYDocReady(ydoc);
 
         const signalingHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
         const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL || `ws://${signalingHost}:4444`;
-
         const provider = new WebrtcProvider(roomName, ydoc, { signaling: [signalingUrl] });
         providerRef.current = provider;
 
-        const ytext = ydoc.getText("monaco");
-        const binding = new MonacoBinding(
-            ytext,
-            monacoEditorRef.current.getModel()!,
-            new Set([monacoEditorRef.current]),
-            provider.awareness
-        );
-        bindingRef.current = binding;
+        // Initial identity setup (can be updated later in a separate effect)
+        const initialIdentity = {
+            name: user?.name || "Guest",
+            color: getColorFromName(user?.name || "Guest"),
+            avatar: user?.image || "",
+            isGuest: !user
+        };
 
-        // Shared logs
+        provider.awareness.setLocalStateField("user", initialIdentity);
+
+        // Awareness changes
+        provider.awareness.on('change', () => {
+            const states = Array.from(provider.awareness.getStates().entries());
+            if (states.length > 4) {
+                setIsRoomFull(true);
+                provider.disconnect();
+                return;
+            }
+
+            const activeUsers: any[] = [];
+            const seenIds = new Set<number>();
+            states.forEach(([clientId, state]) => {
+                if (state?.user && !seenIds.has(clientId)) {
+                    seenIds.add(clientId);
+                    const { color, name, avatar } = state.user;
+                    activeUsers.push({ clientId, name, color, avatar, isMe: clientId === ydoc.clientID });
+                }
+            });
+
+            injectCursorStyles(activeUsers);
+            if (onUsersChange) onUsersChange(activeUsers);
+        });
+
+        // Shared Logs & Language observers
         const ylogs = ydoc.getArray<string>("execution-logs");
-        if (onOutputChange) {
-            ylogs.observe(() => onOutputChange(ylogs.toArray()));
-            onOutputChange(ylogs.toArray());
-        }
+        const ystate = ydoc.getMap<string>("editor-state");
+
+        const logObserver = () => onOutputChange?.(ylogs.toArray());
+        const stateObserver = () => {
+            const syncedLang = ystate.get("language");
+            if (syncedLang && onLanguageChange) onLanguageChange(syncedLang);
+        };
+
+        ylogs.observe(logObserver);
+        ystate.observe(stateObserver);
+
+        // Sync initial values
+        if (onOutputChange) onOutputChange(ylogs.toArray());
+        if (ystate.has("language") && onLanguageChange) onLanguageChange(ystate.get("language")!);
+
+        // Expose push refs
         if (onPushLogRef) {
             onPushLogRef((newLogs: string[]) => {
                 ylogs.delete(0, ylogs.length);
                 ylogs.push(newLogs);
             });
         }
-
-        // Shared language
-        const ystate = ydoc.getMap<string>("editor-state");
-        if (onLanguageChange) {
-            ystate.observe(() => {
-                const syncedLang = ystate.get("language");
-                if (syncedLang) onLanguageChange(syncedLang);
-            });
-            if (ystate.has("language")) onLanguageChange(ystate.get("language")!);
-        }
         if (onPushLanguageRef) {
             onPushLanguageRef((newLang: string) => ystate.set("language", newLang));
         }
 
-        // Identity
-        const generateGuestIdentity = () => {
-            const animals = ["Fox", "Panda", "Tiger", "Penguin", "Koala", "Lion", "Wolf", "Leopard"];
-            const randomAnimal = animals[Math.floor(Math.random() * animals.length)];
-            return {
-                name: `Anonymous ${randomAnimal}`,
-                avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${randomAnimal}${Math.random()}`
-            };
+        setIsYReady(true);
+
+        return () => {
+            provider.destroy();
+            ydoc.destroy();
+            setIsYReady(false);
         };
+    }, [roomName, onYDocReady, onOutputChange, onPushLogRef, onLanguageChange, onPushLanguageRef, onUsersChange]); // Decoupled from 'user' for stability
 
-        const isGuest = !user;
-        const guestIdentity = isGuest ? generateGuestIdentity() : null;
-        const userName = user?.fullName || user?.firstName || user?.username || guestIdentity?.name || "Guest";
-        const userAvatar = user?.imageUrl || guestIdentity?.avatar || "";
-        const computedColor = getColorFromName(userName);
-
-        provider.awareness.setLocalStateField("user", {
-            name: userName,
-            color: computedColor,
-            avatar: userAvatar,
-            isGuest: isGuest
-        });
-
-        // ── Awareness → sync cursorMetaRef → redecorate ──
-        provider.awareness.on('change', () => {
-            setTimeout(() => {
-                const states = Array.from(provider.awareness.getStates().entries());
-
-                if (states.length > 4) {
-                    setIsRoomFull(true);
-                    provider.disconnect();
-                    return;
-                }
-
-                const activeUsers: any[] = [];
-                const seenIds = new Set<number>();
-                cursorMetaRef.current.clear();
-
-                states.forEach(([clientId, state]) => {
-                    if (state?.user && !seenIds.has(clientId)) {
-                        seenIds.add(clientId);
-                        const { color, name, avatar } = state.user;
-
-                        if (clientId !== ydoc.clientID) {
-                            cursorMetaRef.current.set(clientId, { color, name });
-                        }
-
-                        activeUsers.push({ clientId, name, color, avatar, isMe: clientId === ydoc.clientID });
-                    }
-                });
-
-                refreshCursorDecorations();
-                if (onUsersChange) onUsersChange(activeUsers);
-            }, 50);
-        });
-
-        // ── MutationObserver: catch new cursor elements as Monaco re-renders ──
-        const editorDom = editor.getDomNode();
-        if (editorDom) {
-            const observer = new MutationObserver(() => refreshCursorDecorations());
-            observer.observe(editorDom, { childList: true, subtree: true });
-            mutationObserverRef.current = observer;
+    // Handle Identity Updates separately
+    useEffect(() => {
+        if (providerRef.current) {
+            const userName = user?.name || "Guest";
+            providerRef.current.awareness.setLocalStateField("user", {
+                name: userName,
+                color: getColorFromName(userName),
+                avatar: user?.image || "",
+                isGuest: !user
+            });
         }
+    }, [user]);
 
-        setIsBindingComplete(true);
+    // Binding Lifecycle
+    useEffect(() => {
+        if (editorInstance && isYReady && ydocRef.current && providerRef.current && !readOnly) {
+            const ytext = ydocRef.current.getText("monaco");
+            const binding = new MonacoBinding(
+                ytext,
+                editorInstance.getModel()!,
+                new Set([editorInstance]),
+                providerRef.current.awareness
+            );
+            bindingRef.current = binding;
+            setIsBindingComplete(true);
+
+            return () => {
+                binding.destroy();
+                bindingRef.current = null;
+                setIsBindingComplete(false);
+            };
+        } else if (readOnly || (isBindingComplete && !readOnly)) {
+            // Already handled or in preview mode
+            if (readOnly) setIsBindingComplete(true);
+        }
+    }, [readOnly, editorInstance, isYReady]);
+
+    const handleEditorDidMount = (editor: monaco.editor.IStandaloneCodeEditor) => {
+        setEditorInstance(editor);
     };
 
     useEffect(() => {
-        // Keyframe animations + strip y-monaco's default orange cursor — injected once globally
+        // Keyframe animations - injected once globally
         const styleId = `y-monaco-cursor-keyframes-${roomName}`;
         if (!document.getElementById(styleId)) {
             const style = document.createElement('style');
             style.id = styleId;
             style.innerHTML = `
-                @keyframes yjsCursorAppear {
-                    from { opacity: 0; transform: scale(0.5) translateY(-6px); }
+                @keyframes cursorAnchorAppear {
+                    from { opacity: 0; transform: scale(0.2); }
+                    to   { opacity: 1; transform: scale(1); }
+                }
+                @keyframes cursorBadgeAppear {
+                    from { opacity: 0; transform: scale(0.6) translateY(8px); }
                     to   { opacity: 1; transform: scale(1) translateY(0); }
                 }
-                @keyframes yjsBadgePop {
-                    0%   { opacity: 0; transform: scale(0.75) translateY(-4px); }
-                    65%  { opacity: 1; transform: scale(1.07) translateY(1px); }
-                    100% { opacity: 1; transform: scale(1)    translateY(0); }
-                }
-
-                /* Nuke every possible y-monaco default style */
-                .yRemoteSelectionHead,
-                [class^="yRemoteSelectionHead"] {
-                    border: none !important;
-                    border-left: none !important;
-                    border-top: none !important;
-                    border-bottom: none !important;
-                    background: transparent !important;
+                .yRemoteSelectionHead, [class^="yRemoteSelectionHead"] { overflow: visible !important; transition: none !important; }
+                .yRemoteSelection, [class^="yRemoteSelection"] { transition: none !important; }
+                .monaco-editor .overflowingContentWidgets, .monaco-editor .suggest-widget, .monaco-editor .parameter-hints-widget, .monaco-editor .monaco-hover, .monaco-editor .context-view {
+                    z-index: 9999 !important;
                     overflow: visible !important;
                 }
-                .yRemoteSelectionHead::after,
-                [class^="yRemoteSelectionHead"]::after,
-                .yRemoteSelectionHead::before,
-                [class^="yRemoteSelectionHead"]::before {
-                    display: none !important;
-                    content: none !important;
-                    border: none !important;
-                    background: transparent !important;
-                    width: 0 !important;
-                    height: 0 !important;
+
+                /* Fix: widgets portal container must not be clipped */
+                .monaco-editor-overlaymessage,
+                .monaco-aria-container,
+                .overflowingContentWidgets {
+                    position: fixed !important;
+                    z-index: 9999 !important;
                 }
             `;
             document.head.appendChild(style);
         }
 
         return () => {
-            mutationObserverRef.current?.disconnect();
-            bindingRef.current?.destroy();
-            providerRef.current?.destroy();
-            ydocRef.current?.destroy();
             document.getElementById(styleId)?.remove();
+            document.getElementById(`yjs-dynamic-cursors-${roomName}`)?.remove();
         };
     }, [roomName]);
 
     return (
-        <div className="relative w-full h-full min-h-[500px] border border-gray-700/50 rounded-xl overflow-hidden shadow-2xl bg-[#1e1e1e] flex flex-col">
+        <div className="relative w-full h-full min-h-[500px] border border-gray-700/50 rounded-xl shadow-2xl bg-[#1e1e1e] flex flex-col" style={{ overflow: 'visible' }}>
             {isRoomFull && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#1e1e1e]/90 backdrop-blur-md">
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#1e1e1e]/90 backdrop-blur-md rounded-xl">
                     <div className="flex flex-col items-center max-w-sm text-center bg-gray-900 border border-red-500/50 p-8 rounded-2xl shadow-2xl">
                         <svg className="w-16 h-16 text-red-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                         </svg>
                         <h2 className="text-xl font-bold text-white mb-2">Workspace Full</h2>
-                        <p className="text-gray-400 text-sm">This collaborative session has reached maximum capacity (4 users) to ensure high-performance peer-to-peer syncing.</p>
+                        <p className="text-gray-400 text-sm">Capacity reached. Try again later.</p>
                     </div>
                 </div>
             )}
-            {!isBindingComplete && !isRoomFull && (
+            {(!isBindingComplete && !readOnly) && !isRoomFull && (
                 <div className="absolute inset-0 flex items-center justify-center bg-[#1e1e1e]/80 backdrop-blur-sm z-20 text-white/70">
                     <div className="flex flex-col items-center gap-3">
                         <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
@@ -382,25 +323,29 @@ export default function CollaborativeEditor({
                     </div>
                 </div>
             )}
-            <div className="flex-1 relative w-full min-h-0 z-10">
-                <div className="absolute inset-0">
+            <div className="flex-1 relative w-full min-h-0 z-[100]" style={{ overflow: 'visible' }}>
+                <div className="absolute inset-0" style={{ overflow: 'visible' }}>
                     <Editor
                         height="100%"
                         language={language}
                         theme="vs-dark"
+                        value={readOnly ? previewValue : undefined}
                         options={{
                             minimap: { enabled: false },
                             fontSize: 14,
                             wordWrap: "on",
                             lineNumbersMinChars: 3,
-                            padding: { top: 16, bottom: 16 },
+                            padding: { top: 28, bottom: 16 },
                             scrollBeyondLastLine: false,
                             smoothScrolling: true,
-                            cursorBlinking: "smooth",
+                            cursorBlinking: readOnly ? "solid" : "smooth",
                             cursorSmoothCaretAnimation: "on",
                             formatOnPaste: true,
+                            fixedOverflowWidgets: true,
+                            readOnly: readOnly,
+                            domReadOnly: readOnly,
                         }}
-                        onMount={handleEditorDidMount}
+                        onMount={(editor) => handleEditorDidMount(editor)}
                         loading={<div className="text-white/50 p-4">Initializing Editor Engine...</div>}
                     />
                 </div>

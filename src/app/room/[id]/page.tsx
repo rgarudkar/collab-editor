@@ -1,11 +1,13 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Suspense, useState, useRef, useEffect } from "react";
+import { Suspense, useState, useRef, useEffect, useCallback } from "react";
+import React from "react";
 import { useParams, useRouter } from "next/navigation";
 import NetworkHealthSparkline from "@/components/NetworkHealthSparkline";
-import { UserButton } from "@clerk/nextjs";
+import { useSession, signOut } from "next-auth/react";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import * as Y from "yjs";
 
 // Dynamically import the collaborative editor to enable Code Splitting
 // This keeps the initial load time fast since Monaco is heavy.
@@ -36,10 +38,28 @@ export default function Home() {
 
   const params = useParams();
   const router = useRouter();
+  const { data: session } = useSession();
 
   // Room ID state
   const [roomId, setRoomId] = useState<string | null>(null);
+  const [hasMounted, setHasMounted] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
+
+  // Live Stats State (Mocked)
+  const [ping, setPing] = useState(12);
+  const [mem, setMem] = useState(248);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPing(prev => Math.max(8, Math.min(30, prev + (Math.random() - 0.5) * 4)));
+      setMem(prev => Math.max(200, Math.min(500, prev + (Math.random() - 0.5) * 10)));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Active Users State from Yjs
   const [activeUsers, setActiveUsers] = useState<any[]>([]);
@@ -57,44 +77,58 @@ export default function Home() {
   // Time Travel State
   const [updates, setUpdates] = useState<{ timestamp: number; update: Uint8Array }[]>([]);
   const [replayIndex, setReplayIndex] = useState(-1);
+  const [previewValue, setPreviewValue] = useState("");
   const ydocRef = useRef<any>(null);
 
-  const handleYDocReady = (ydoc: any) => {
+  const handleYDocReady = React.useCallback((ydoc: any) => {
     ydocRef.current = ydoc;
 
     // Listen for all updates on the YDoc
     ydoc.on('update', (update: Uint8Array) => {
       setUpdates(prev => [...prev, { timestamp: Date.now(), update }]);
     });
-  };
+  }, []);
 
   const handleTimeTravelChange = (index: number) => {
-    setReplayIndex(index);
+    const isLatest = index === updates.length - 1 || index === -1;
+    setReplayIndex(isLatest ? -1 : index);
+
+    if (isLatest) {
+      setPreviewValue("");
+      return;
+    }
+
     if (!ydocRef.current) return;
 
-    // To time travel, we essentially need a fresh document to apply updates to, 
-    // or we manage it carefully. For simplicity in a local demo, we can just log the action,
-    // as full time-travel in Yjs usually requires destroying and recreating the YDoc/Binding 
-    // or using a separate readonly YDoc.
+    // Reconstruct state at index using the imported Y instance
+    const tempDoc = new Y.Doc();
+    for (let i = 0; i <= index; i++) {
+      Y.applyUpdate(tempDoc, updates[i].update);
+    }
 
-    // In a full implementation: 
-    // 1. Unbind editor
-    // 2. Create new YDoc
-    // 3. Apply updates 0 to `index`
-    // 4. Bind editor as readonly
-    // 4. Bind editor as readonly
-    const newLogs = [`[Time Travel]: Previewing state at update #${index + 1} / ${updates.length}`, ...sharedOutputRef.current];
-    pushToSharedLogs(newLogs);
+    const snapshotText = tempDoc.getText("monaco").toString();
+    setPreviewValue(snapshotText);
+
+    const newLogs = [`[Time Travel]: Previewing state at update #${index + 1} / ${updates.length}`];
+    handleOutputChange([...newLogs, ...sharedOutputRef.current.slice(0, 5)]);
   };
 
-  const handleOutputChange = (logs: string[]) => {
+  const handleOutputChange = React.useCallback((logs: string[]) => {
     sharedOutputRef.current = logs;
     setOutputLogs(logs);
-  };
+  }, []);
 
-  const handleLanguageChange = (lang: string) => {
+  const handleLanguageChange = React.useCallback((lang: string) => {
     setSelectedLanguage(lang);
-  };
+  }, []);
+
+  const handlePushLogRef = React.useCallback((fn: (logs: string[]) => void) => {
+    pushLogRef.current = fn;
+  }, []);
+
+  const handlePushLanguageRef = React.useCallback((fn: (lang: string) => void) => {
+    pushLanguageRef.current = fn;
+  }, []);
 
   const pushToSharedLogs = (newLogs: string[]) => {
     // We update local state to reflect immediately.
@@ -205,218 +239,243 @@ export default function Home() {
     }
   };
 
-  if (!roomId) {
-    // Prevent rendering the editor until we have a room ID to avoid split-brain
+  if (!roomId || !hasMounted) {
+    // Prevent rendering the editor until we have a room ID and client has mounted
     return (
-      <main className="min-h-screen bg-slate-50 dark:bg-gradient-to-br dark:from-[#0d1117] dark:to-[#161b22] flex items-center justify-center">
+      <main className="min-h-screen bg-[#02040a] flex items-center justify-center">
         <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 dark:bg-gradient-to-br dark:from-[#0d1117] dark:to-[#161b22] text-slate-800 dark:text-white p-4 md:p-8 flex flex-col font-sans selection:bg-blue-500/30">
-      {/* Header */}
-      <header className="flex items-center justify-between mb-6 pb-4 border-b border-slate-200 dark:border-gray-800">
-        <div>
-          <h1
-            onClick={() => router.push('/')}
-            className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600 dark:from-blue-400 dark:to-purple-500 tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
-          >
-            SyncWrite Pro
-          </h1>
-          <p className="text-xs md:text-sm text-slate-500 dark:text-gray-400 mt-1 flex items-center gap-2">
-            Real-time collaborative code environment
-            <span className="hidden sm:inline-block px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-[10px] uppercase font-bold tracking-wider">Room: {roomId}</span>
-          </p>
-        </div>
-        <div className="flex items-center gap-3 md:gap-4">
-          <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-white/50 dark:bg-gray-800/50 rounded-lg border border-slate-200 dark:border-gray-700/50 backdrop-blur-sm">
-            <NetworkHealthSparkline />
+    <main className="h-screen bg-[#02040a] text-white flex flex-col font-sans selection:bg-blue-500/30 overflow-hidden">
+      {/* 1. Top Navigation Bar */}
+      <header className="h-12 border-b border-white/5 bg-[#0d1117] flex items-center justify-between px-3 shrink-0 z-50">
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => router.push('/')}>
+            <div className="w-6 h-6 bg-gradient-to-br from-blue-500 to-purple-600 rounded flex items-center justify-center">
+              <span className="text-[10px] font-bold">S</span>
+            </div>
+            <span className="font-bold tracking-tight text-sm">SyncWrite IDE</span>
           </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <div className="flex -space-x-2 mr-2">
+            {activeUsers.slice(0, 3).map((u) => (
+              <div
+                key={u.clientId}
+                className="w-6 h-6 rounded-full border-2 border-[#0d1117] relative group"
+                style={{ backgroundColor: u.color }}
+              >
+                {u.avatar ? (
+                  <img src={u.avatar} className="w-full h-full rounded-full" alt={u.name} />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-[8px] font-bold">{u.name[0]}</div>
+                )}
+              </div>
+            ))}
+            {activeUsers.length > 3 && (
+              <div className="w-6 h-6 rounded-full bg-gray-700 border-2 border-[#0d1117] flex items-center justify-center text-[8px]">
+                +{activeUsers.length - 3}
+              </div>
+            )}
+          </div>
+
           <button
             onClick={handleShare}
-            className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold rounded-lg shadow-sm transition-all duration-200 flex items-center gap-2 text-white
-              ${isCopied ? "bg-emerald-600 hover:bg-emerald-500" : "bg-blue-600 hover:bg-blue-500"}`}
+            className={`h-7 px-3 text-[10px] font-bold rounded flex items-center gap-2 transition-all ${isCopied ? "bg-emerald-600" : "bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 border border-blue-500/30"}`}
           >
-            {isCopied ? (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-                Copied!
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"></path></svg>
-                <span className="hidden sm:inline">Share Session</span>
-              </>
-            )}
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"></path></svg>
+            SHARE
           </button>
 
-          {/* Controls: Theme & User */}
-          <div className="flex items-center gap-3 pl-2 sm:pl-4 border-l border-slate-200 dark:border-gray-700">
+          <div className="flex items-center gap-3 border-l border-white/10 pl-4 h-6">
             <ThemeToggle />
-            <UserButton
-              afterSignOutUrl="/"
-              appearance={{
-                elements: {
-                  avatarBox: "w-8 h-8 md:w-9 md:h-9 border border-slate-200 dark:border-gray-700 shadow-sm"
-                }
-              }}
+            <img
+              src={session?.user?.image || `https://api.dicebear.com/7.x/avataaars/svg?seed=${session?.user?.name || 'Guest'}`}
+              className="w-7 h-7 rounded-full border border-white/10 cursor-pointer"
+              title="Profile"
+              onClick={() => signOut({ callbackUrl: '/' })}
             />
           </div>
         </div>
       </header>
 
-      {/* Main Layout Area */}
-      <div className="flex-1 flex flex-col lg:flex-row gap-6 w-full pb-8">
-        {/* Editor Section */}
-        <section className="flex-[2] rounded-xl relative flex flex-col min-h-[500px] lg:min-h-0 shadow-sm dark:shadow-none">
-          <div className="absolute -inset-[1px] bg-gradient-to-b from-blue-200 to-purple-200 dark:from-blue-500/20 dark:to-purple-500/20 rounded-xl z-0 blur-sm"></div>
-          <div className="relative z-10 w-full h-full p-1 bg-white dark:bg-[#1e1e1e]/90 rounded-xl shadow-xl dark:shadow-none backdrop-blur-md border border-slate-200 dark:border-transparent flex flex-col">
-            {/* Header bar for editor */}
-            <div className="flex items-center justify-between px-4 py-2 bg-slate-100 dark:bg-[#252526] rounded-t-lg border-b border-slate-200 dark:border-gray-800">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-mono text-slate-500 dark:text-gray-400">index.{selectedLanguage === 'python' ? 'py' : selectedLanguage === 'cpp' ? 'cpp' : 'js'}</span>
+      <div className="flex-1 flex overflow-hidden lg:flex-row flex-col">
+        {/* 2. Left Activity Bar */}
+        <aside className="w-12 border-r border-white/5 bg-[#0d1117] flex-col items-center py-4 gap-6 hidden md:flex shrink-0">
+          <div className="text-gray-400 hover:text-blue-400 cursor-pointer transition-colors p-2 rounded-lg hover:bg-white/5"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h18" strokeWidth="2" strokeLinecap="round" /></svg></div>
+          <div className="text-blue-400 cursor-pointer p-2 rounded-lg bg-white/5"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeWidth="2" strokeLinecap="round" /></svg></div>
+          <div className="text-gray-500 hover:text-white cursor-not-allowed p-2 rounded-lg opacity-50"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 6v6m0 0v6m0-6h6m-6 0H6" strokeWidth="2" strokeLinecap="round" /></svg></div>
+          <div className="mt-auto text-gray-400 hover:text-white cursor-pointer p-2 rounded-lg transition-colors"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" strokeWidth="2" /><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" strokeWidth="2" /></svg></div>
+          <div className="text-gray-400 hover:text-white cursor-pointer p-2 rounded-lg transition-colors"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z" strokeWidth="2" strokeLinecap="round" /></svg></div>
+        </aside>
 
-                {/* Language Selector */}
+        {/* 3. Main Editor Area */}
+        <section className="flex-1 flex flex-col min-w-0 bg-[#02040a] relative">
+          {/* Editor Header / Tabs */}
+          <div className="h-9 bg-[#0d1117] flex items-center px-2 shrink-0 border-b border-white/5">
+            <div className="flex items-center h-full bg-[#02040a] border-t-2 border-blue-500 px-4 gap-2 text-[10px] font-medium tracking-wide">
+              <span className="text-blue-500 font-bold">
+                {selectedLanguage === 'javascript' ? 'JS' : selectedLanguage === 'python' ? 'PY' : 'C++'}
+              </span>
+              <span>index.{selectedLanguage === 'python' ? 'py' : selectedLanguage === 'cpp' ? 'cpp' : 'js'}</span>
+            </div>
+
+            <div className="ml-auto flex items-center gap-3">
+              <div className="relative flex items-center bg-white/5 border border-white/10 rounded px-2 py-0.5 gap-2 group hover:border-blue-500/50 transition-colors">
+                <span className="text-[9px] font-bold text-gray-500 uppercase">Lang</span>
                 <select
                   value={selectedLanguage}
                   onChange={(e) => {
                     setSelectedLanguage(e.target.value);
-                    if (pushLanguageRef.current) {
-                      pushLanguageRef.current(e.target.value);
-                    }
+                    if (pushLanguageRef.current) pushLanguageRef.current(e.target.value);
                   }}
-                  className="bg-white dark:bg-[#1e1e1e] border border-slate-300 dark:border-gray-700 text-slate-700 dark:text-gray-300 text-xs rounded px-2 py-1 outline-none appearance-none cursor-pointer hover:border-slate-400 dark:hover:border-gray-500 transition-colors shadow-sm dark:shadow-none"
+                  className="bg-transparent text-[10px] text-blue-400 font-bold outline-none cursor-pointer"
                 >
-                  <option value="javascript">JavaScript (Local)</option>
-                  <option value="python">Python (Remote)</option>
-                  <option value="cpp">C++ (Remote)</option>
+                  <option value="javascript" className="bg-[#0b0e14]">JavaScript</option>
+                  <option value="python" className="bg-[#0b0e14]">Python</option>
+                  <option value="cpp" className="bg-[#0b0e14]">C++</option>
                 </select>
               </div>
-
-              <div className="flex gap-2">
-                {/* Visual placeholder for peer connection logic */}
-                {activeUsers.length === 0 ? (
-                  <div className="flex items-center gap-2 text-xs text-slate-400 dark:text-gray-500 animate-pulse">
-                    <span>Connecting peers...</span>
-                  </div>
-                ) : (
-                  // Removed overflow-hidden so tooltips can escape the boundary
-                  <div className="flex -space-x-3 sm:-space-x-2 px-2">
-                    {activeUsers.map((u, i) => (
-                      <div
-                        key={u.clientId}
-                        className="w-8 h-8 md:w-9 md:h-9 rounded-full border-[2.5px] border-slate-100 dark:border-[#1e1e1e] bg-slate-200 dark:bg-gray-800 relative group cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:scale-110 hover:z-40 shadow-sm hover:shadow-lg"
-                        style={{ borderColor: u.color }}
-                      >
-                        {u.avatar ? (
-                          <img src={u.avatar} alt={u.name} className="w-full h-full rounded-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-[11px] font-bold text-white rounded-full bg-slate-700" style={{ backgroundColor: u.color }}>
-                            {u.name.substring(0, 2).toUpperCase()}
-                          </div>
-                        )}
-
-                        {/* Premium Tooltip */}
-                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-3 opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0 transition-all duration-200 pointer-events-none z-50 flex flex-col items-center">
-                          {/* Tooltip Arrow */}
-                          <div className="w-2 h-2 -mb-1 rotate-45 border-t border-l border-white/10 dark:border-white/10" style={{ backgroundColor: u.color }}></div>
-                          {/* Tooltip Body */}
-                          <div
-                            className="text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg shadow-xl backdrop-blur-md whitespace-nowrap border border-white/20"
-                            style={{ backgroundColor: u.color.replace('hsl', 'hsla').replace(')', ', 0.9)') }}
-                          >
-                            {u.name} {u.isMe && <span className="opacity-75 font-normal ml-1">(You)</span>}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
+          </div>
 
-            <div className="flex-1 w-full relative overflow-hidden">
-              <Suspense fallback={<div className="p-4 text-slate-500 dark:text-gray-400">Loading editor environment...</div>}>
-                <CollaborativeEditor
-                  roomName={roomId}
-                  language={selectedLanguage}
-                  onLanguageChange={handleLanguageChange}
-                  onOutputChange={handleOutputChange}
-                  onPushLogRef={(fn) => (pushLogRef.current = fn)}
-                  onPushLanguageRef={(fn) => (pushLanguageRef.current = fn)}
-                  onYDocReady={handleYDocReady}
-                  onUsersChange={setActiveUsers}
+          {/* Breadcrumbs */}
+          <div className="h-6 flex items-center px-4 gap-2 text-[10px] text-gray-500 bg-[#02040a] shrink-0 border-b border-white/5">
+            <span className="text-blue-500/50 uppercase tracking-tighter">Room</span>
+            <span className="text-gray-600">/</span>
+            <span className="text-gray-300">workspace_{roomId?.slice(0, 6)}</span>
+            <span className="text-gray-600">/</span>
+            <span className="text-blue-400">index.{selectedLanguage === 'python' ? 'py' : selectedLanguage === 'cpp' ? 'cpp' : 'js'}</span>
+          </div>
+
+          {/* Actual Editor Wrapper */}
+          <div className="flex-1 relative overflow-hidden">
+            <Suspense fallback={<div className="p-4 text-gray-500 text-xs">Loading Editor Environment...</div>}>
+              <CollaborativeEditor
+                roomName={roomId}
+                language={selectedLanguage}
+                readOnly={replayIndex !== -1}
+                previewValue={previewValue}
+                onLanguageChange={handleLanguageChange}
+                onOutputChange={handleOutputChange}
+                onPushLogRef={handlePushLogRef}
+                onPushLanguageRef={handlePushLanguageRef}
+                onYDocReady={handleYDocReady}
+                onUsersChange={setActiveUsers}
+              />
+            </Suspense>
+
+            {/* Floating Time Travel UI (Centered at bottom) */}
+            {updates.length > 0 && (
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[100] w-72 bg-[#161b22]/90 backdrop-blur-md border border-white/10 rounded-full h-10 px-4 flex items-center gap-4 shadow-2xl">
+                <svg className="w-3 h-3 text-purple-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                <input
+                  type="range"
+                  min="0"
+                  max={updates.length > 0 ? updates.length - 1 : 0}
+                  value={replayIndex === -1 ? (updates.length > 0 ? updates.length - 1 : 0) : replayIndex}
+                  onChange={(e) => handleTimeTravelChange(parseInt(e.target.value))}
+                  className="flex-1 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-purple-500 hover:accent-purple-400"
                 />
-              </Suspense>
-            </div>
+                <span className="text-[9px] font-bold text-gray-400 whitespace-nowrap min-w-[30px]">
+                  {replayIndex === -1 ? 'LIVE' : `T-${updates.length - replayIndex}`}
+                </span>
+              </div>
+            )}
           </div>
         </section>
 
-        {/* Sidebar / Tools Section */}
-        <aside className="w-full lg:w-80 flex flex-col gap-6 shrink-0 lg:h-auto overflow-visible">
-          {/* Output / Execution Area */}
-          <div className="bg-white/80 dark:bg-[#161b22]/80 border border-slate-200 dark:border-gray-800 rounded-xl p-4 flex-1 backdrop-blur-md shadow-lg dark:shadow-xl flex flex-col min-h-[300px]">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-slate-700 dark:text-gray-300">Execution Output</h2>
-              <button
-                onClick={handleRunCode}
-                disabled={isExecuting}
-                className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-600/20 hover:bg-green-200 dark:hover:bg-green-600/40 border border-green-300 dark:border-green-500/50 rounded transition-colors text-green-700 dark:text-green-400 font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 shadow-sm"
-              >
-                {isExecuting ? (
-                  <>
-                    <span className="w-3 h-3 border-2 border-green-600 dark:border-green-400 border-t-transparent rounded-full animate-spin"></span>
-                    Running...
-                  </>
-                ) : (
-                  `► Run ${selectedLanguage === 'javascript' ? 'Local' : 'Remote'}`
-                )}
-              </button>
-            </div>
-            <div className="flex-1 bg-slate-50 dark:bg-black/40 rounded-lg border border-slate-200 dark:border-gray-800/50 p-3 font-mono text-xs text-slate-600 dark:text-gray-400 overflow-y-auto whitespace-pre-wrap shadow-inner">
-              {outputLogs.length === 0 ? (
-                <span className="opacity-50">{"> Ready for execution..."}</span>
-              ) : (
-                outputLogs.map((log, i) => (
-                  <div key={i} className={`mb-1 ${log.includes('[Error]') || log.includes('Timeout') ? 'text-red-500 dark:text-red-400 font-medium' : log.includes('successfully') ? 'text-emerald-600 dark:text-green-400/80 font-medium' : ''}`}>
-                    {log}
-                  </div>
-                ))
-              )}
+        {/* 4. Right Side-Panel (Multi-tool) */}
+        <aside className="lg:w-80 w-full border-l border-white/5 bg-[#0d1117] flex flex-col shrink-0">
+          {/* Header */}
+          <div className="h-9 flex items-center justify-between px-4 border-b border-white/5 bg-[#0d1117] shrink-0">
+            <span className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">Execution Output</span>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
+              <span className="text-[9px] font-bold text-emerald-500 uppercase">Success</span>
             </div>
           </div>
 
-          {/* Time Travel / Debugging Panel */}
-          <div className="h-44 bg-white/80 dark:bg-[#161b22]/80 border border-slate-200 dark:border-gray-800 rounded-xl p-4 backdrop-blur-md shadow-lg dark:shadow-xl flex flex-col">
-            <h2 className="text-sm font-semibold text-slate-700 dark:text-gray-300 mb-1 flex items-center justify-between">
-              <span>Time-Travel Debugging</span>
-              <span className="text-xs bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-500/30">
-                {updates.length} states saved
-              </span>
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-gray-500 mb-4 leading-relaxed">
-              Drag the slider to preview the interview history state. In production, these are stored in MongoDB.
-            </p>
-            <div className="mt-auto">
-              <input
-                type="range"
-                min="0"
-                max={updates.length > 0 ? updates.length - 1 : 0}
-                value={replayIndex === -1 ? (updates.length > 0 ? updates.length - 1 : 0) : replayIndex}
-                onChange={(e) => handleTimeTravelChange(parseInt(e.target.value))}
-                disabled={updates.length <= 1}
-                className="w-full accent-purple-600 dark:accent-purple-500 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer mb-2"
-              />
-              <div className="flex justify-between text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-widest font-semibold">
-                <span>Start</span>
-                <span>Current</span>
+          <div className="flex-1 flex flex-col p-4 gap-4 overflow-y-auto custom-scrollbar">
+            {/* Run Button Zone */}
+            <div className="flex gap-2">
+              <button
+                onClick={handleRunCode}
+                disabled={isExecuting}
+                className="flex-1 bg-blue-600 hover:bg-blue-500 h-8 rounded text-[10px] font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+              >
+                {isExecuting ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span> : 'RUN CODE'}
+              </button>
+              <button className="w-8 bg-white/5 hover:bg-white/10 rounded flex items-center justify-center text-gray-400 transition-colors">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth="2" strokeLinecap="round" /></svg>
+              </button>
+            </div>
+
+            {/* Terminal View */}
+            <div className="flex-1 bg-black/40 rounded border border-white/5 p-3 font-mono text-[11px] text-gray-300 min-h-[200px] shadow-inner selection:bg-purple-500/20">
+              <div className="text-blue-400 mb-2">$ npm run build:syncwrite</div>
+              {outputLogs.length === 0 ? (
+                <div className="opacity-30">Ready for execution...</div>
+              ) : (
+                outputLogs.map((log, i) => <div key={i} className="mb-1">{log}</div>)
+              )}
+            </div>
+
+            {/* Network Stats Card */}
+            <div className="bg-white/5 border border-white/5 rounded-lg p-3">
+              <div className="text-[9px] font-bold text-gray-500 uppercase mb-3 tracking-widest">Network Stats</div>
+              <div className="space-y-4">
+                <div>
+                  <div className="flex justify-between text-[10px] mb-1">
+                    <span className="text-gray-400">Sync Latency</span>
+                    <span className="text-blue-400">{Math.round(ping)}ms</span>
+                  </div>
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.min(100, (ping / 40) * 100)}%` }}></div>
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-[10px] mb-1">
+                    <span className="text-gray-400">Memory Usage</span>
+                    <span className="text-pink-400">{Math.round(mem)}MB</span>
+                  </div>
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full bg-pink-500 transition-all duration-1000" style={{ width: `${Math.min(100, (mem / 1024) * 100)}%` }}></div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </aside>
       </div>
+
+      {/* 5. Bottom Status Bar */}
+      <footer className="h-6 bg-gradient-to-r from-blue-600 to-purple-600 flex items-center justify-between px-3 text-[9px] font-bold tracking-wide uppercase shrink-0">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5 h-full px-1">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" strokeWidth="2" strokeLinecap="round" /></svg>
+            <span>main*</span>
+          </div>
+          <div className="flex items-center gap-1.5 h-full px-1">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" strokeWidth="2" strokeLinecap="round" /></svg>
+            <span>Up to date</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4 h-full">
+          <span>Spaces: 2</span>
+          <span>UTF-8</span>
+          <span>{selectedLanguage.toUpperCase()}</span>
+          <div className="flex items-center gap-1.5 h-full bg-black/20 px-3">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span>Connected: {activeUsers.length} Nodes</span>
+          </div>
+        </div>
+      </footer>
     </main>
   );
 }

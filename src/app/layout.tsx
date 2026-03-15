@@ -1,4 +1,4 @@
-import { ClerkProvider } from '@clerk/nextjs'
+import AuthProvider from '@/components/AuthProvider'
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { ThemeProvider } from 'next-themes'
@@ -17,7 +17,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <ClerkProvider>
+    <AuthProvider>
       <html lang="en" suppressHydrationWarning>
         <body className={`${inter.className} bg-white text-slate-900 dark:bg-[#02040a] dark:text-white antialiased overflow-x-hidden`}>
           <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
@@ -25,6 +25,6 @@ export default function RootLayout({
           </ThemeProvider>
         </body>
       </html>
-    </ClerkProvider>
+    </AuthProvider>
   )
 }
