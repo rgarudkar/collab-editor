@@ -274,6 +274,13 @@ export default function Home() {
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-[8px] font-bold">{u.name[0]}</div>
                 )}
+                {/* Premium Tooltip */}
+                <div className="absolute top-[120%] left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col items-center z-[100]">
+                   <div className="w-1.5 h-1.5 bg-gray-900 rotate-45 border-l border-t border-white/10 -mb-[4px] relative z-20"></div>
+                   <div className="bg-gray-900 text-[9px] font-bold text-white px-2 py-1 rounded shadow-xl border border-white/10 whitespace-nowrap relative z-10">
+                     {u.name} {u.isMe ? "(You)" : ""}
+                   </div>
+                </div>
               </div>
             ))}
             {activeUsers.length > 3 && (
@@ -285,10 +292,19 @@ export default function Home() {
 
           <button
             onClick={handleShare}
-            className={`h-7 px-3 text-[10px] font-bold rounded flex items-center gap-2 transition-all ${isCopied ? "bg-emerald-600" : "bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 border border-blue-500/30"}`}
+            className={`h-7 px-3 text-[10px] font-bold rounded flex items-center gap-2 transition-all ${isCopied ? "bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]" : "bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 border border-blue-500/30"}`}
           >
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"></path></svg>
-            SHARE
+            {isCopied ? (
+              <>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
+                COPIED
+              </>
+            ) : (
+              <>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"></path></svg>
+                SHARE
+              </>
+            )}
           </button>
 
           <div className="flex items-center gap-3 border-l border-white/10 pl-4 h-6">

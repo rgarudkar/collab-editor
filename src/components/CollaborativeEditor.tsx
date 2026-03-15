@@ -5,7 +5,7 @@ import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
 import { MonacoBinding } from "y-monaco";
 import { useSession } from "next-auth/react";
-import Editor, { useMonaco } from "@monaco-editor/react";
+import Editor from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 
 interface CollaborativeEditorProps {
@@ -19,6 +19,47 @@ interface CollaborativeEditorProps {
     onPushLanguageRef?: (pushFn: (lang: string) => void) => void;
     onYDocReady?: (ydoc: Y.Doc) => void;
     onUsersChange?: (users: any[]) => void;
+}
+
+/**
+ * WHY THIS WRAPPER EXISTS — THE CURSOR BUG EXPLAINED
+ *
+ * y-monaco's MonacoBinding does two things with awareness:
+ *   1. On local cursor move  → awareness.setLocalStateField('selection', ...)
+ *   2. On remote text change → editor.setSelection(savedPos) to keep the local
+ *      cursor stable after text is inserted above/before it.
+ *
+ * Step 2 triggers Monaco's onDidChangeCursorSelection event, which fires step 1
+ * again — even though the local user didn't actually move their cursor.
+ * This causes THIS tab to re-broadcast its cursor position on every keystroke
+ * from a REMOTE user. The other tab sees the broadcast, re-renders the cursor
+ * decoration, and the remote cursor appears to "jump" or flicker.
+ *
+ * Fix: wrap the awareness object so that `setLocalStateField('selection', ...)`
+ * is a no-op while we are inside a Yjs transaction triggered by a remote origin.
+ * We detect "remote origin" by observing the ytext and setting a flag for the
+ * duration of the microtask. Since editor.setSelection() → onDidChangeCursorSelection
+ * → setLocalStateField all happen synchronously in the same call stack as the
+ * ytext observer, the flag is reliably set when the spurious broadcast occurs.
+ */
+function createSuppressableAwareness(awareness: InstanceType<typeof import("y-protocols/awareness").Awareness>) {
+    let suppressSelectionBroadcast = false;
+
+    const proxy = new Proxy(awareness, {
+        get(target, prop) {
+            if (prop === "setLocalStateField") {
+                return (field: string, value: any) => {
+                    // Drop selection broadcasts that happen during remote text application.
+                    if (field === "selection" && suppressSelectionBroadcast) return;
+                    return target.setLocalStateField(field, value);
+                };
+            }
+            const val = (target as any)[prop];
+            return typeof val === "function" ? val.bind(target) : val;
+        },
+    });
+
+    return { proxy, setSuppressed: (v: boolean) => { suppressSelectionBroadcast = v; } };
 }
 
 export default function CollaborativeEditor({
@@ -36,12 +77,15 @@ export default function CollaborativeEditor({
     const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(null);
     const [isBindingComplete, setIsBindingComplete] = useState(false);
     const [isYReady, setIsYReady] = useState(false);
+    const [isRoomFull, setIsRoomFull] = useState(false);
+
     const providerRef = useRef<WebrtcProvider | null>(null);
     const bindingRef = useRef<MonacoBinding | null>(null);
     const ydocRef = useRef<Y.Doc | null>(null);
-
-    // Track which clients have already run their entrance animation
+    const localClientIdRef = useRef<number | null>(null);
     const decoratedClientsRef = useRef<Set<number>>(new Set());
+    // Ref to the suppression toggle so the binding effect can use it
+    const setSuppressedRef = useRef<((v: boolean) => void) | null>(null);
 
     const getColorFromName = (name: string) => {
         const vibrantColors = [
@@ -58,16 +102,17 @@ export default function CollaborativeEditor({
 
     const { data: session } = useSession();
     const user = session?.user;
-    const [isRoomFull, setIsRoomFull] = useState(false);
 
-    // Generate clean CSS class injection strictly based on awareness
     const injectCursorStyles = (activeUsers: any[]) => {
         let styleStr = '';
         activeUsers.forEach(u => {
+            if (u.isMe) return; // Never inject CSS for own clientId
+
             const isNew = !decoratedClientsRef.current.has(u.clientId);
             if (isNew) decoratedClientsRef.current.add(u.clientId);
 
-            const firstName = u.name.trim().split(/\s+/)[0] || 'Guest';
+            const nameParts = u.name.split(' ');
+            const displayName = u.isGuest ? `${nameParts[0]} ${nameParts[1] || ''}` : nameParts[0];
             const rgbColor = u.color;
 
             styleStr += `
@@ -82,13 +127,10 @@ export default function CollaborativeEditor({
                     border-radius: 2px;
                     z-index: 4;
                 }
-                
                 .yRemoteSelection-${u.clientId} {
                     background-color: ${rgbColor}33 !important;
                     border-radius: 2px;
                 }
-                
-                /* Sleek Anchor Dot connecting the caret to the flag */
                 .yRemoteSelectionHead-${u.clientId}::before {
                     content: '';
                     position: absolute;
@@ -104,10 +146,8 @@ export default function CollaborativeEditor({
                     z-index: 5;
                     ${isNew ? 'animation: cursorAnchorAppear 0.3s cubic-bezier(0.34,1.56,0.64,1) forwards;' : ''}
                 }
-                
-                /* Modern Name Tag / Flag */
                 .yRemoteSelectionHead-${u.clientId}::after {
-                    content: '${firstName}';
+                    content: '${displayName}';
                     position: absolute;
                     bottom: calc(100% + 6px);
                     left: 2px;
@@ -130,7 +170,6 @@ export default function CollaborativeEditor({
             `;
         });
 
-        // Inject into DOM
         const styleId = `yjs-dynamic-cursors-${roomName}`;
         let styleTag = document.getElementById(styleId);
         if (!styleTag) {
@@ -145,6 +184,8 @@ export default function CollaborativeEditor({
     useEffect(() => {
         const ydoc = new Y.Doc();
         ydocRef.current = ydoc;
+        localClientIdRef.current = ydoc.clientID;
+
         if (onYDocReady) onYDocReady(ydoc);
 
         const signalingHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
@@ -152,17 +193,29 @@ export default function CollaborativeEditor({
         const provider = new WebrtcProvider(roomName, ydoc, { signaling: [signalingUrl] });
         providerRef.current = provider;
 
-        // Initial identity setup (can be updated later in a separate effect)
-        const initialIdentity = {
-            name: user?.name || "Guest",
-            color: getColorFromName(user?.name || "Guest"),
-            avatar: user?.image || "",
-            isGuest: !user
+        const generateGuestIdentity = () => {
+            const animals = ["Fox", "Panda", "Tiger", "Penguin", "Koala", "Lion", "Wolf", "Leopard", "Rabbit", "Deer"];
+            const randomAnimal = animals[Math.floor(Math.random() * animals.length)];
+            const guestId = Math.floor(Math.random() * 1000);
+            return {
+                name: `Guest ${randomAnimal} #${guestId}`,
+                avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${randomAnimal}${guestId}`
+            };
         };
 
-        provider.awareness.setLocalStateField("user", initialIdentity);
+        const isGuest = !user;
+        const guestIdent = isGuest ? generateGuestIdentity() : null;
+        const userName = user?.name || guestIdent?.name || "Guest";
+        const userAvatar = user?.image || guestIdent?.avatar || "";
+        const computedColor = getColorFromName(userName);
 
-        // Awareness changes
+        provider.awareness.setLocalStateField("user", {
+            name: userName,
+            color: computedColor,
+            avatar: userAvatar,
+            isGuest: isGuest
+        });
+
         provider.awareness.on('change', () => {
             const states = Array.from(provider.awareness.getStates().entries());
             if (states.length > 4) {
@@ -173,11 +226,20 @@ export default function CollaborativeEditor({
 
             const activeUsers: any[] = [];
             const seenIds = new Set<number>();
+            const myClientId = localClientIdRef.current!;
+
             states.forEach(([clientId, state]) => {
                 if (state?.user && !seenIds.has(clientId)) {
                     seenIds.add(clientId);
-                    const { color, name, avatar } = state.user;
-                    activeUsers.push({ clientId, name, color, avatar, isMe: clientId === ydoc.clientID });
+                    const { color, name, avatar, isGuest: uIsGuest } = state.user;
+                    activeUsers.push({
+                        clientId,
+                        name,
+                        color,
+                        avatar,
+                        isGuest: uIsGuest,
+                        isMe: clientId === myClientId,
+                    });
                 }
             });
 
@@ -185,7 +247,6 @@ export default function CollaborativeEditor({
             if (onUsersChange) onUsersChange(activeUsers);
         });
 
-        // Shared Logs & Language observers
         const ylogs = ydoc.getArray<string>("execution-logs");
         const ystate = ydoc.getMap<string>("editor-state");
 
@@ -198,11 +259,9 @@ export default function CollaborativeEditor({
         ylogs.observe(logObserver);
         ystate.observe(stateObserver);
 
-        // Sync initial values
         if (onOutputChange) onOutputChange(ylogs.toArray());
         if (ystate.has("language") && onLanguageChange) onLanguageChange(ystate.get("language")!);
 
-        // Expose push refs
         if (onPushLogRef) {
             onPushLogRef((newLogs: string[]) => {
                 ylogs.delete(0, ylogs.length);
@@ -218,45 +277,80 @@ export default function CollaborativeEditor({
         return () => {
             provider.destroy();
             ydoc.destroy();
+            localClientIdRef.current = null;
             setIsYReady(false);
         };
-    }, [roomName, onYDocReady, onOutputChange, onPushLogRef, onLanguageChange, onPushLanguageRef, onUsersChange]); // Decoupled from 'user' for stability
+    }, [roomName, onYDocReady, onOutputChange, onPushLogRef, onLanguageChange, onPushLanguageRef, onUsersChange]);
 
     // Handle Identity Updates separately
     useEffect(() => {
         if (providerRef.current) {
-            const userName = user?.name || "Guest";
-            providerRef.current.awareness.setLocalStateField("user", {
-                name: userName,
-                color: getColorFromName(userName),
-                avatar: user?.image || "",
-                isGuest: !user
-            });
+            const userName = user?.name;
+            if (userName) {
+                providerRef.current.awareness.setLocalStateField("user", {
+                    name: userName,
+                    color: getColorFromName(userName),
+                    avatar: user?.image || "",
+                    isGuest: false
+                });
+            }
         }
     }, [user]);
 
     // Binding Lifecycle
     useEffect(() => {
-        if (editorInstance && isYReady && ydocRef.current && providerRef.current && !readOnly) {
-            const ytext = ydocRef.current.getText("monaco");
-            const binding = new MonacoBinding(
-                ytext,
-                editorInstance.getModel()!,
-                new Set([editorInstance]),
-                providerRef.current.awareness
-            );
-            bindingRef.current = binding;
-            setIsBindingComplete(true);
-
-            return () => {
-                binding.destroy();
-                bindingRef.current = null;
-                setIsBindingComplete(false);
-            };
-        } else if (readOnly || (isBindingComplete && !readOnly)) {
-            // Already handled or in preview mode
+        if (!editorInstance || !isYReady || !ydocRef.current || !providerRef.current || readOnly) {
             if (readOnly) setIsBindingComplete(true);
+            return;
         }
+
+        const ydoc = ydocRef.current;
+        const ytext = ydoc.getText("monaco");
+
+        // Create the suppressable awareness proxy.
+        // This is the core fix: when a REMOTE ytext change comes in, y-monaco calls
+        // editor.setSelection() to preserve the local cursor position. That call
+        // triggers onDidChangeCursorSelection, which calls awareness.setLocalStateField
+        // — pointlessly re-broadcasting this tab's cursor to all peers, making them
+        // all re-render and causing the "ghost cursor moving" visual bug.
+        // The proxy intercepts that broadcast and drops it.
+        const { proxy: awarenessProxy, setSuppressed } = createSuppressableAwareness(
+            providerRef.current.awareness
+        );
+        setSuppressedRef.current = setSuppressed;
+
+        // Observe ytext to know when we are applying a REMOTE change.
+        // A remote change has a transaction origin that is NOT our local doc.
+        // We set the suppression flag for the synchronous duration of the observer
+        // call — which is exactly when y-monaco calls editor.setSelection() and
+        // triggers the spurious awareness broadcast.
+        const suppressObserver = (event: Y.YTextEvent, transaction: Y.Transaction) => {
+            const isRemote = transaction.origin !== ydoc.clientID && transaction.origin !== null;
+            if (isRemote) {
+                setSuppressed(true);
+                // The selection restore happens synchronously, so we can lift the
+                // flag in a microtask — after the current call stack unwinds.
+                Promise.resolve().then(() => setSuppressed(false));
+            }
+        };
+        ytext.observe(suppressObserver);
+
+        const binding = new MonacoBinding(
+            ytext,
+            editorInstance.getModel()!,
+            new Set([editorInstance]),
+            awarenessProxy as any
+        );
+        bindingRef.current = binding;
+        setIsBindingComplete(true);
+
+        return () => {
+            ytext.unobserve(suppressObserver);
+            binding.destroy();
+            bindingRef.current = null;
+            setSuppressedRef.current = null;
+            setIsBindingComplete(false);
+        };
     }, [readOnly, editorInstance, isYReady]);
 
     const handleEditorDidMount = (editor: monaco.editor.IStandaloneCodeEditor) => {
@@ -264,7 +358,6 @@ export default function CollaborativeEditor({
     };
 
     useEffect(() => {
-        // Keyframe animations - injected once globally
         const styleId = `y-monaco-cursor-keyframes-${roomName}`;
         if (!document.getElementById(styleId)) {
             const style = document.createElement('style');
@@ -280,12 +373,14 @@ export default function CollaborativeEditor({
                 }
                 .yRemoteSelectionHead, [class^="yRemoteSelectionHead"] { overflow: visible !important; transition: none !important; }
                 .yRemoteSelection, [class^="yRemoteSelection"] { transition: none !important; }
-                .monaco-editor .overflowingContentWidgets, .monaco-editor .suggest-widget, .monaco-editor .parameter-hints-widget, .monaco-editor .monaco-hover, .monaco-editor .context-view {
+                .monaco-editor .overflowingContentWidgets,
+                .monaco-editor .suggest-widget,
+                .monaco-editor .parameter-hints-widget,
+                .monaco-editor .monaco-hover,
+                .monaco-editor .context-view {
                     z-index: 9999 !important;
                     overflow: visible !important;
                 }
-
-                /* Fix: widgets portal container must not be clipped */
                 .monaco-editor-overlaymessage,
                 .monaco-aria-container,
                 .overflowingContentWidgets {
@@ -345,7 +440,7 @@ export default function CollaborativeEditor({
                             readOnly: readOnly,
                             domReadOnly: readOnly,
                         }}
-                        onMount={(editor) => handleEditorDidMount(editor)}
+                        onMount={handleEditorDidMount}
                         loading={<div className="text-white/50 p-4">Initializing Editor Engine...</div>}
                     />
                 </div>
