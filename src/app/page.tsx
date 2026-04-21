@@ -183,12 +183,15 @@ export default function LandingPage() {
   const [activeSection, setActiveSection] = useState("");
   const { t1, t2, done } = useTypewriter(["Code Together.", "Build Anything."], 70, 400);
   const heroRef = useRef<HTMLElement>(null);
-  const { scrollYProgress } = useScroll({ target: heroRef });
-  const heroOpacity = useTransform(scrollYProgress, [0, 0.5], [1, 0]);
-  const heroScale = useTransform(scrollYProgress, [0, 0.5], [1, 0.93]);
 
   useEffect(() => {
-    const handler = () => setScrolled(window.scrollY > 20);
+    const handler = () => {
+      setScrolled(window.scrollY > 20);
+      // Clear scroll-spy when back near the top (hero section)
+      if (window.scrollY < window.innerHeight * 0.6) {
+        setActiveSection("");
+      }
+    };
     window.addEventListener("scroll", handler);
     return () => window.removeEventListener("scroll", handler);
   }, []);
@@ -264,7 +267,7 @@ export default function LandingPage() {
       </header>
 
       {/* ── HERO ── */}
-      <motion.section ref={heroRef} className="hero-section" style={{ opacity: heroOpacity, scale: heroScale }}>
+      <section ref={heroRef} className="hero-section">
         <motion.div
           initial={{ opacity: 0, y: -16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -418,7 +421,7 @@ export default function LandingPage() {
             </div>
           </div>
         </motion.div>
-      </motion.section>
+      </section>
 
       {/* ── STATS ── */}
       <section id="stats" className="stats-section">
