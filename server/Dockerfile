@@ -10,12 +10,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy package files from the server directory
-COPY server/package*.json ./
+# Copy package files
+COPY package*.json ./
 RUN npm install
 
-# Copy everything from server directory
-COPY server/ .
+# Copy everything
+COPY . .
 
 # Ensure temp directory exists for code execution
 RUN mkdir -p temp
